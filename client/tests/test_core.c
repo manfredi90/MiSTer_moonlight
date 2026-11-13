@@ -273,17 +273,33 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 320 * 240; i++) canvas[i] = (uint32_t)(i * 2654435761u) & 0xFFFFFF;
   CHECK("mostra il menu nell'overlay", mg_core_overlay_present(canvas, 320, 240) == 0);
   uint32_t base1 = lo(H264RING_W_OVL_BASE);
-  CHECK("descrittore: acceso, 640x480, 8888",
-        (lo(H264RING_W_OVL_CTL) >> H264RING_OVL_CTL_ENABLE_BIT & 1) && lo(H264RING_W_OVL_SIZE) == ((480u << 16) | 640u) &&
-        ((lo(H264RING_W_OVL_CTL) >> H264RING_OVL_CTL_FMT_LSB) & 3) == H264RING_OVL_FMT_8888 && lo(H264RING_W_OVL_STRIDE) == 2560);
+  CHECK("descrittore: acceso, tutto il raster 720x480, 8888",
+        (lo(H264RING_W_OVL_CTL) >> H264RING_OVL_CTL_ENABLE_BIT & 1) && lo(H264RING_W_OVL_SIZE) == ((480u << 16) | 720u) &&
+        ((lo(H264RING_W_OVL_CTL) >> H264RING_OVL_CTL_FMT_LSB) & 3) == H264RING_OVL_FMT_8888 && lo(H264RING_W_OVL_STRIDE) == 2880);
   {
-    const uint32_t *pg = (const uint32_t *)(fbmem + (base1 - H264RING_FB_BYTE));
+    /* canvas: colonne di colore uniforme a blocchi di 32 pixel */
+    static uint32_t bands[320 * 240];
+    for (int y = 0; y < 240; y++)
+      for (int x = 0; x < 320; x++) bands[y * 320 + x] = (x / 32) * 0x101010u + (y < 120 ? 0x800000u : 0);
+    mg_core_overlay_present(bands, 320, 240);
+    const uint32_t *pg = (const uint32_t *)(fbmem + (lo(H264RING_W_OVL_BASE) - H264RING_FB_BYTE));
     int ok = 1;
-    for (int y = 0; y < 480 && ok; y += 7)
-      for (int x = 0; x < 640 && ok; x += 5)
-        ok = pg[y * 640 + x] == (canvas[(y / 2) * 320 + x / 2] | 0xFF000000u);
-    CHECK("i pixel sono il canvas ingrandito x2, opachi", ok);
+    for (int y = 0; y < 480 && ok; y += 5)
+      for (int x = 0; x < 720 && ok; x++) {
+        int sx = x * 320 / 720;
+        if (sx % 32 < 2 || sx % 32 > 29) continue; /* vicino al confine: sfumato */
+        ok = pg[y * 720 + x] == (bands[(y / 2) * 320 + sx] | 0xFF000000u);
+      }
+    CHECK("il canvas copre tutta la larghezza (320 -> 720), righe doppie, opaco", ok);
+    CHECK("bordi: prima e ultima colonna sono quelle del canvas",
+          pg[0] == (bands[0] | 0xFF000000u) && pg[719] == (bands[319] | 0xFF000000u) &&
+          pg[479 * 720 + 719] == (bands[239 * 320 + 319] | 0xFF000000u));
+    uint32_t mid = pg[100 * 720 + (32 * 720 + 160) / 320]; /* sul confine tra due bande: in mezzo */
+    CHECK("al confine tra due colonne il colore e' interpolato",
+          (mid & 0xFF) > (bands[100 * 320 + 31] & 0xFF) && (mid & 0xFF) < (bands[100 * 320 + 32] & 0xFF));
   }
+  mg_core_overlay_present(canvas, 320, 240);
+  base1 = lo(H264RING_W_OVL_BASE);
   usleep(5000);
   mg_core_overlay_present(canvas, 320, 240);
   CHECK("il disegno successivo va nell'altra pagina", lo(H264RING_W_OVL_BASE) != base1);
@@ -297,6 +313,13 @@ int main(int argc, char **argv) {
   core.refresh = 3; usleep(2000);
   mg_core_get_info(&ci);
   CHECK("Refresh Rate 50 Hz: si chiede 50 (576 righe)", ci.refresh_x100 == 5000 && ci.raster_h == 576);
+  mg_core_overlay_present(canvas, 320, 240);
+  {
+    const uint32_t *pg = (const uint32_t *)(fbmem + (lo(H264RING_W_OVL_BASE) - H264RING_FB_BYTE));
+    CHECK("a 576 righe l'overlay e' 720x576, il menu al centro",
+          lo(H264RING_W_OVL_SIZE) == ((576u << 16) | 720u) && pg[47 * 720 + 300] == (canvas[0] | 0xFF000000u) &&
+          pg[48 * 720] == (canvas[0] | 0xFF000000u) && pg[47 * 720] == (canvas[0] | 0xFF000000u));
+  }
   core.refresh = 0; core.il = 1; usleep(2000);
   mg_core_get_info(&ci);
   CHECK("raster interlacciato letto", ci.interlaced && ci.refresh_x100 == 5994);

@@ -49,6 +49,7 @@
 #define IDR_GRACE_MS    250     /* errori subito dopo un IDR: riguardano le immagini prima */
 #define RESTART_MS      1000
 #define W_EARLY         1
+#define OVL_MAX_H       576
 
 static h264ring *ring;
 static pthread_mutex_t ring_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -249,8 +250,8 @@ void mg_core_get_info(mg_core_info *ci) {
 static bool fb_mapped; /* da h264ring_fb_map (non un framebuffer dei test) */
 
 static void overlay_layout(void) {
-  ovl_w = 640;
-  ovl_h = 480;
+  ovl_w = 720;           /* tutto il raster: 720 x 480, o 576 a 50 Hz */
+  ovl_h = OVL_MAX_H;
   static const struct { unsigned fmt, bpp, pages; } tries[] = {
     { H264RING_OVL_FMT_8888, 4, 2 }, { H264RING_OVL_FMT_1555, 2, 2 },
     { H264RING_OVL_FMT_8888, 4, 1 }, { H264RING_OVL_FMT_1555, 2, 1 },
@@ -274,7 +275,7 @@ static void overlay_layout(void) {
     return;
   }
   memset(fb.virt, 0, (size_t)ovl_page_bytes * ovl_pages);
-  printf("[core] overlay %dx%d, %u byte per pixel, %u pagine (framebuffer %u byte)\n", ovl_w, ovl_h, ovl_bpp,
+  printf("[core] overlay fino a %dx%d, %u byte per pixel, %u pagine (framebuffer %u byte)\n", ovl_w, ovl_h, ovl_bpp,
          ovl_pages, (unsigned)fb.len);
 }
 
@@ -298,9 +299,53 @@ void mg_core_use_fb(void *virt, uint32_t phys, uint32_t len) {
   overlay_layout();
 }
 
+/* un pixel nel formato dell'overlay (8888: byte B, G, R, A = 0xAARRGGBB; 1555: A R G B) */
+static uint32_t ovl_px(uint32_t c) {
+  if (ovl_bpp == 4)
+    return c | 0xFF000000u;
+  return 0x8000 | (((c >> 19) & 0x1F) << 10) | (((c >> 11) & 0x1F) << 5) | ((c >> 3) & 0x1F);
+}
+
+/* una riga del canvas allargata a tutto il raster (320 -> 720: x2,25, interpolata come fa il
+ * core col video: sul CRT non si vedono colonne larghe 2 e 3 pixel alternate) */
+static void ovl_line(uint8_t *dst, const uint32_t *src, int w) {
+  for (int x = 0; x < ovl_w; x++) {
+    int pos = (int)(((2 * x + 1) * w * 256LL) / (2 * ovl_w)) - 128; /* centro del pixel, 1/256 */
+    if (pos < 0) pos = 0;
+    int i = pos >> 8, f = pos & 255;
+    if (i >= w - 1) { i = w - 1; f = 0; }
+    uint32_t a = src[i], b = f ? src[i + 1] : a, c = 0;
+    for (int sh = 0; sh < 24; sh += 8) {
+      uint32_t ca = (a >> sh) & 0xFF, cb = (b >> sh) & 0xFF;
+      c |= ((ca * (256 - f) + cb * f + 128) >> 8) << sh;
+    }
+    if (ovl_bpp == 4)
+      ((uint32_t *)dst)[x] = ovl_px(c);
+    else
+      ((uint16_t *)dst)[x] = (uint16_t)ovl_px(c);
+  }
+}
+
+static void ovl_fill(uint8_t *dst, uint32_t c) {
+  for (int x = 0; x < ovl_w; x++) {
+    if (ovl_bpp == 4)
+      ((uint32_t *)dst)[x] = ovl_px(c);
+    else
+      ((uint16_t *)dst)[x] = (uint16_t)ovl_px(c);
+  }
+}
+
+/* Il canvas (w x h) su tutto il raster: largo quanto il raster (720 pixel a 13,5 MHz, la
+ * larghezza piena del CRT), righe doppie, al centro in altezza a 576 righe (sopra e sotto
+ * il colore del suo angolo): non si vede niente del core sotto */
 int mg_core_overlay_present(const uint32_t *canvas, int w, int h) {
-  if (!fb_ok || !ring || w * 2 != ovl_w || h * 2 != ovl_h)
+  if (!fb_ok || !ring || w < 2 || w > ovl_w || h * 2 > OVL_MAX_H)
     return -1;
+  mg_core_info ci;
+  mg_core_get_info(&ci);
+  int oh = ci.raster_h > 0 && ci.raster_h <= OVL_MAX_H ? ci.raster_h : 480;
+  if (h * 2 > oh)
+    oh = h * 2;
   /* la pagina da disegnare non deve essere quella che il core sta leggendo */
   unsigned page = ovl_pages > 1 ? ovl_page ^ 1 : 0;
   if (ovl_pages > 1 && ovl_gen > 0) {
@@ -310,42 +355,34 @@ int mg_core_overlay_present(const uint32_t *canvas, int w, int h) {
   }
   uint8_t *base = (uint8_t *)fb.virt + (size_t)page * ovl_page_bytes;
   size_t stride = (size_t)ovl_w * ovl_bpp;
-  if (ovl_bpp == 4) {
-    uint32_t line[1280];
-    for (int y = 0; y < h; y++) {
-      const uint32_t *src = canvas + (size_t)y * w;
-      for (int x = 0; x < w; x++) {
-        uint32_t c = src[x] | 0xFF000000u; /* B, G, R, A in memoria = 0xAARRGGBB */
-        line[2 * x] = c;
-        line[2 * x + 1] = c;
-      }
-      memcpy(base + (size_t)(2 * y) * stride, line, stride);
-      memcpy(base + (size_t)(2 * y + 1) * stride, line, stride);
+  int y0 = (oh - 2 * h) / 2;
+  uint32_t border = canvas[0];
+  static uint8_t line[2048 * 4];
+  for (int y = 0; y < oh; y++) {
+    int sy = (y - y0) >> 1;
+    bool in = y >= y0 && sy < h;
+    /* due righe uguali di fila: la seconda si copia dalla prima */
+    if (in && ((y - y0) & 1)) {
+      memcpy(base + (size_t)y * stride, line, stride);
+      continue;
     }
-  } else {
-    uint16_t line[1280];
-    for (int y = 0; y < h; y++) {
-      const uint32_t *src = canvas + (size_t)y * w;
-      for (int x = 0; x < w; x++) {
-        uint32_t c = src[x];
-        uint16_t v = 0x8000 | (((c >> 19) & 0x1F) << 10) | (((c >> 11) & 0x1F) << 5) | ((c >> 3) & 0x1F);
-        line[2 * x] = v;
-        line[2 * x + 1] = v;
-      }
-      memcpy(base + (size_t)(2 * y) * stride, line, stride);
-      memcpy(base + (size_t)(2 * y + 1) * stride, line, stride);
-    }
+    if (in)
+      ovl_line(line, canvas + (size_t)sy * w, w);
+    else
+      ovl_fill(line, border);
+    memcpy(base + (size_t)y * stride, line, stride);
   }
+  int ovl_h_now = oh;
   __sync_synchronize();
   struct h264ring_overlay o;
   memset(&o, 0, sizeof(o));
   o.base = fb.phys + page * ovl_page_bytes;
   o.width = (uint16_t)ovl_w;
-  o.height = (uint16_t)ovl_h;
+  o.height = (uint16_t)ovl_h_now;
   o.stride = (uint16_t)stride;
   o.format = (uint8_t)ovl_fmt;
   o.band_first = 0;
-  o.band_last = (uint16_t)(ovl_h - 1);
+  o.band_last = (uint16_t)(ovl_h_now - 1);
   pthread_mutex_lock(&ring_mx);
   int gen = h264ring_overlay_show(ring, &o);
   pthread_mutex_unlock(&ring_mx);
