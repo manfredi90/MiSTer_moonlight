@@ -1,0 +1,15 @@
+# Configurazione di MiSTer Moonlight (usata da Scripts/mister_moonlight.sh)
+
+# Indirizzo IP del PC con Sunshine
+HOST=192.168.1.100
+
+# 1 = all'avvio mostra il menu a schermo (app, risoluzione, bitrate...; le scelte
+#     fatte nel menu vengono ricordate in menu.cfg)
+# 0 = avvia direttamente APP con le opzioni di EXTRA
+MENU=1
+
+# App di Sunshine da avviare con MENU=0
+APP="Desktop"
+
+# Opzioni aggiuntive, per esempio: -width 640 -height 480 -bitrate 10000 -fps 30 -pads 2 -quitappafter
+EXTRA="-stats"

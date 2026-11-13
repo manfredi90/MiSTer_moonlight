@@ -1,0 +1,140 @@
+# The H264 core of core/ with Quartus 17.0 Lite, several fitter seeds in parallel: the
+# device is nearly full and the timing result depends on the placement. The pick job keeps
+# the seed with hold met and the best worst-case setup slack (then the smallest TNS) as the
+# H264_core artifact, laid out as on the SD card.
+name: core
+
+on:
+  push:
+    paths: ['core/**', '.github/workflows/core.yml']
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: 'Fitter seeds, as a JSON list'
+        required: false
+        default: '[1, 2, 3, 4, 5, 6]'
+
+concurrency:
+  group: core-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (seed ${{ matrix.seed }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    env:
+      QUARTUS_LIMIT: 300   # minutes
+    defaults:
+      run:
+        working-directory: core
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        seed: ${{ fromJSON(inputs.seeds || '[1, 2, 3, 4, 5, 6]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fitter seed
+        run: |
+          sed -i 's/^set_global_assignment -name SEED .*/set_global_assignment -name SEED ${{ matrix.seed }}/' H264.qsf
+          grep -n "name SEED" H264.qsf
+
+      - name: Free disk space for the Quartus image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Quartus
+        run: |
+          start=$(date +%s)
+          docker run -d --name quartus -v "$PWD":/build -w /build theypsilon/quartus-lite-c5:17.0.2.docker0 \
+            sh -c '/opt/intelFPGA_lite/quartus/bin/quartus_sh --flow compile H264.qpf > build.log 2>&1; echo $? > build.rc'
+          until [ -f build.rc ]; do
+            if [ $(( $(date +%s) - start )) -gt $(( QUARTUS_LIMIT * 60 )) ]; then
+              echo "::error::Quartus stopped after $QUARTUS_LIMIT minutes"
+              docker kill quartus > /dev/null; echo 124 > build.rc
+            fi
+            sleep 30
+          done
+          echo "Quartus: $(( ($(date +%s) - start) / 60 )) minutes, exit $(cat build.rc)"
+
+      - name: Timing
+        run: |
+          cat output_files/H264.fit.summary 2>/dev/null || true
+          cat output_files/H264.sta.summary 2>/dev/null || true
+          grep -E "Worst-case (setup|hold) slack is" build.log | sed 's/^/::notice::/' || true
+          setup=$(grep -oE "Worst-case setup slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
+          hold=$(grep -oE "Worst-case hold slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
+          tns=$(awk '/^Type/ {s = ($3 == "Setup")} /^TNS/ && s {t += $3} END {printf "%.3f", t}' output_files/H264.sta.summary 2>/dev/null)
+          mkdir -p timing && echo "${{ matrix.seed }} ${setup:-nan} ${hold:-nan} ${tns:-nan}" > timing/seed${{ matrix.seed }}.txt
+          cat timing/seed${{ matrix.seed }}.txt
+          exit $(cat build.rc)
+
+      - name: Log
+        if: always()
+        run: |
+          grep -E "^Error( \(|:)" build.log | head -20 | sed 's/^/::error::/' || true
+          tail -40 build.log || true
+
+      - name: SD card package
+        run: |
+          mkdir -p sd/_Other
+          cp output_files/H264.rbf sd/_Other/H264_$(date -u +%Y%m%d).rbf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: H264_core_seed${{ matrix.seed }}
+          path: core/sd/
+          retention-days: 5
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: timing_seed${{ matrix.seed }}
+          path: core/timing/
+          retention-days: 5
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reports_seed${{ matrix.seed }}
+          path: |
+            core/output_files/*.summary
+            core/output_files/H264.sta.rpt
+            core/build.log
+          retention-days: 5
+
+  pick:
+    needs: build
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: timing_seed*
+          merge-multiple: true
+          path: timing
+
+      - name: Best seed
+        id: best
+        run: |
+          cat timing/*.txt | sort -n > all.txt
+          best=$(awk '$2 != "nan" && $3 != "nan" && $3 >= 0' all.txt | sort -k2,2gr -k4,4gr | head -1 | cut -d' ' -f1)
+          [ -n "$best" ] || { echo "::error::no seed with hold timing met"; exit 1; }
+          {
+            echo "| seed | worst setup | worst hold | setup TNS |"
+            echo "|---|---|---|---|"
+            awk -v b=$best '{m = ($1 == b) ? " **(kept)**" : ""; print "| " $1 m " | " $2 " | " $3 " | " $4 " |"}' all.txt
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::kept seed $best: $(awk -v b=$best '$1 == b {print "setup " $2 ", hold " $3 ", TNS " $4}' all.txt)"
+          echo "seed=$best" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: H264_core_seed${{ steps.best.outputs.seed }}
+          path: sd
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: H264_core
+          path: sd/
+          overwrite: true

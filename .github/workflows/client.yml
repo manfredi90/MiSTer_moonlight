@@ -1,0 +1,36 @@
+# The client: cross-compiled for the MiSTer's ARM, tested against the fake core under
+# qemu-arm, packaged as the SD-card zip (artifact MiSTer_moonlight).
+name: client
+
+on:
+  push:
+    paths: ['client/**', 'LEGGIMI.md', '.github/workflows/client.yml']
+  pull_request:
+    paths: ['client/**']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf cmake ninja-build \
+            pkg-config qemu-user ffmpeg zip
+
+      - name: Dependencies cache
+        uses: actions/cache@v4
+        with:
+          path: client/work/deps
+          key: deps-${{ runner.os }}-${{ hashFiles('client/scripts/build-deps.sh') }}
+
+      - name: Build, test, package
+        run: client/scripts/build.sh client/work
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MiSTer_moonlight
+          path: client/work/pkg/
