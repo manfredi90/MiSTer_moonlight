@@ -125,9 +125,12 @@ module csync_smpte (
 // Per-standard geometry. All in the DOUBLED dot units the interlaced raster runs
 // in (syncgen_intf doubles the modeline under pixel repetition), 27 MHz.
 // ---------------------------------------------------------------------------
-localparam [11:0] HALF_N  = 12'd858,  HALF_P  = 12'd864;   // half-line
-localparam [11:0] EQ_N    = 12'd62,   EQ_P    = 12'd63;    // equalizing pulse  p
-localparam [11:0] BROAD_N = 12'd731,  BROAD_P = 12'd737;   // broad pulse       q
+// MISTER MOONLIGHT (2026-11): the 1,572-dot line of the 24.759 MHz raster (h264/sync_gen.sv), the
+// same pulse widths in time: half 786 (31.75 us), equalizing 57 (2.30 us), broad 670 (27.06 us:
+// the half-line less a 4.69 us serration). 240p's line is 1,575: its second half-line 3 dots longer.
+localparam [11:0] HALF_N  = 12'd786,  HALF_P  = 12'd864;   // half-line
+localparam [11:0] EQ_N    = 12'd57,   EQ_P    = 12'd63;    // equalizing pulse  p
+localparam [11:0] BROAD_N = 12'd670,  BROAD_P = 12'd737;   // broad pulse       q
 localparam [11:0] VSS_N   = 12'd244,  VSS_P   = 12'd292;   // first broad LINE
 localparam [3:0]  SEG_N   = 4'd6,     SEG_P   = 4'd5;      // half-lines per segment
 

@@ -1,3 +1,10 @@
 client/build/
 client/work/
 *.zip
+core/.sim/
+core/bench/h264/*_sim
+core/bench/h264/csync_ref_gen.v
+core/bench/h264/csync_pipe_gen.vh
+core/bench/h264/*.log
+core/bench/h264/fixtures/gen/
+__pycache__/

@@ -29,6 +29,7 @@ typedef struct {
   bool interlaced;    /* 480i/576i sull'uscita analogica */
   bool p240;          /* 240p/288p durante lo stream (core di core/, 240p Playback) */
   int raster_h;       /* 480 o 576 */
+  int raster_w;       /* 720 (core originale) o 640 (core di core/) */
   unsigned max_mbs, mb_rate;
 } mg_core_info;
 void mg_core_get_info(mg_core_info *ci);

@@ -174,16 +174,16 @@ module disp_ctl (
     logic [19:0] rp;                                            // the refresh phase, 0 .. RF - 1
     logic        fpar;                                          // (P7) the raster's field of this refresh: 0 top
     wire        pal = (std == 2'd2);
-    wire [19:0] rf_m1   = prog240_i ? (pal ? 20'd540071 : 20'd450639) :
-                         pal ? 20'd539999 : (std == 2'd1) ? 20'd449999 : 20'd450449;
-    // Keep the three decisions inside the 240p/288p vertical blank: a short lead
-    // is sufficient because the prepared head is already queued before evaluation.
-    wire [19:0] p_eval  = prog240_i ? (pal ? 20'd515838 : 20'd426560) :
-                         pal ? 20'd517536 : 20'd428142;
-    wire [19:0] p_pick  = prog240_i ? (pal ? 20'd517569 : 20'd428280) :
-                         pal ? 20'd518400 : 20'd429000;
-    wire [19:0] p_skip  = prog240_i ? (pal ? 20'd501990 : 20'd416240) :
-                         pal ? 20'd509760 : 20'd420420;
+    // MISTER MOONLIGHT (2026-11): every raster is exactly 60.000 Hz (h264/sync_gen.sv: 412,650 dots of
+    // 24.759 MHz = 450,000 clk_sys cycles a refresh), so one grid for all: the 60.00 Hz standard's
+    // events (tools/disp_sched_ref.py's), which on the 786-dot raster fall half a line later than
+    // their names -- skip 490.5, eval 499.5, pickup 500.5 (857.143 cycles a line; a field's 245.25 /
+    // 249.75 / 250.25 at 480i), all in the vertical blank; 240p (1,717.5 cycles a line, 1,575 dots):
+    // skip 242, eval 248, pickup 249, inside its blank (lines 240-261).
+    wire [19:0] rf_m1   = 20'd449999;
+    wire [19:0] p_eval  = prog240_i ? 20'd425947 : 20'd428142;
+    wire [19:0] p_pick  = prog240_i ? 20'd427664 : 20'd429000;
+    wire [19:0] p_skip  = prog240_i ? 20'd415642 : 20'd420420;
     wire        tick = aligned && (tdiv == 9'd0);
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

@@ -173,9 +173,12 @@ module disp_fit (
     wire [29:0] b4 = {r_b, 2'b00};                              // 4 B
     wire [37:0] b640 = {1'b0, r_b, 9'd0} + {3'd0, r_b, 7'd0};   // 640 B = 512 B + 128 B
     wire [37:0] b768 = {1'b0, r_b, 9'd0} + {2'd0, r_b, 8'd0};   // 768 B = 512 B + 256 B (576 lines)
-    wire [12:0] rh   = k_pal ? 13'd576 : 13'd480;               // the raster's lines
-    wire [37:0] a540 = {1'b0, r_a, 9'd0} + {6'd0, r_a, 4'd0} + {7'd0, r_a, 3'd0} + {8'd0, r_a, 2'd0}; // 540 A
-    wire [37:0] a405 = {2'd0, r_a, 8'd0} + {3'd0, r_a, 7'd0} + {6'd0, r_a, 4'd0} + {8'd0, r_a, 2'd0} + {10'd0, r_a}; // 405 A (Fit)
+    wire [12:0] rh   = 13'd480;                                  // the raster's lines (no 576)
+    // MISTER MOONLIGHT (2026-11): the raster is 640 SQUARE pixels (4:3 at 480 lines): the narrow
+    // Letterbox width is 480 A / B (was 540: 720 dots of 8:9), the anamorphic 16:9 Fit's 360 A / B
+    // (was 405); 640 B / A is unchanged
+    wire [37:0] a540 = {1'b0, r_a, 9'd0} - {5'd0, r_a, 5'd0};   // 480 A = 512 A - 32 A (name kept)
+    wire [37:0] a405 = {2'd0, r_a, 8'd0} + {4'd0, r_a, 6'd0} + {5'd0, r_a, 5'd0} + {7'd0, r_a, 3'd0}; // 360 A (Fit)
     // A': rh x (B disp_w), shifted below 2^28: 480 P = 512 P - 32 P, 576 P = 512 P + 64 P (38 bits)
     wire [37:0] p_rh = k_pal ? ({1'b0, pm_p[27:0], 9'd0} + {4'd0, pm_p[27:0], 6'd0})
                              : ({1'b0, pm_p[27:0], 9'd0} - {5'd0, pm_p[27:0], 5'd0});
@@ -221,7 +224,7 @@ module disp_fit (
                        {5'd0, dvn, 7'd0} + {7'd0, dvn, 5'd0} + {8'd0, dvn, 4'd0} + {10'd0, dvn, 2'd0};   // + 180 dv
     wire        fit2 = (dvn <= 4'd4) && (c2 <= 16'd1300);
     // the rectangle's offsets: (720 - ow) and (480 - oh), halved with the sign kept
-    wire [13:0] ox_d = (k_nat ? {2'd0, k_nw} : 14'd720) - {1'b0, r_ow};
+    wire [13:0] ox_d = (k_nat ? {2'd0, k_nw} : 14'd640) - {1'b0, r_ow};
     wire [13:0] oy_d = (k_nat ? {2'd0, k_nh} : {1'b0, rh}) - {1'b0, r_oh};
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -237,9 +240,9 @@ module disp_fit (
             r_bad <= 1'b0; r_wide <= 1'b0; r_clamp <= 1'b0; r_snap <= 1'b0; r_a <= '0; r_b <= '0;
             r_ow <= '0; r_oh <= '0; r_sx <= '0;
             dv_n <= '0; dv_d <= '0; dv_rem <= '0; dv_q <= '0; dv_cnt <= '0;
-            ow <= 13'd720; oh <= 13'd480; ox0 <= '0; oy0 <= '0; sx <= 28'h001_0000; sy <= 28'h001_0000;
+            ow <= 13'd640; oh <= 13'd480; ox0 <= '0; oy0 <= '0; sx <= 28'h001_0000; sy <= 28'h001_0000;
             clip_en <= 1'b0; clip_x <= '0; clip_y <= '0; clip_w <= '0; clip_h <= '0;
-            dh_l2 <= '0; dv_l2 <= '0; wc <= 12'd720; hc <= 12'd480; lx <= '0; ty <= '0;
+            dh_l2 <= '0; dv_l2 <= '0; wc <= 12'd640; hc <= 12'd480; lx <= '0; ty <= '0;
             crop_bad <= 1'b0; snap <= 1'b0; clamp <= 1'b0; slide <= 1'b0;
             k_area <= 1'b0; r_sy <= '0; r_dhl2 <= '0; r_dvl2 <= '0; r_hpf <= '0; r_vpf <= '0; hpf <= '0; vpf <= '0;
         end else begin
@@ -298,7 +301,7 @@ module disp_fit (
                         pm_mw <= 12'd16; pm_mh <= 12'd9; pm_cnt <= 4'd12;
                         st <= S_PM;
                     end else if (k_mode == 2'd3) begin           // Fill without a display: the raster filled
-                        r_ow <= 13'd720; r_oh <= rh; r_clamp <= 1'b0;
+                        r_ow <= 13'd640; r_oh <= rh; r_clamp <= 1'b0;
                         st <= S_SNAP;
                     end else begin
                         // round(n / d) = floor((2n + d) / 2d)
@@ -341,7 +344,7 @@ module disp_fit (
                         dv_rem <= '0; dv_q <= '0; dv_cnt <= 6'd40;
                         st <= S_DIV; st_ret <= S_Q1;
                     end else begin                               // Fill, not wider: the raster filled
-                        r_ow <= 13'd720; r_oh <= rh; r_clamp <= 1'b0;
+                        r_ow <= 13'd640; r_oh <= rh; r_clamp <= 1'b0;
                         st <= S_SNAP;
                     end
                 end
@@ -359,13 +362,13 @@ module disp_fit (
                 S_Q1: begin
                     // the quotient: ow or oh, clamped to [2, 8191]; the other side is the raster's
                     if (k_mode == 2'd3 || (k_mode == 2'd2 && r_w16)) begin   // A' / Fit wider than 16:9: the letterbox's height
-                        r_ow <= 13'd720;
+                        r_ow <= 13'd640;
                         r_oh <= (dv_q > 40'd8191) ? 13'd8191 : (dv_q < 40'd2) ? 13'd2 : dv_q[12:0];
                     end else if (k_mode == 2'd2) begin          // Fit, 16:9 or narrower: the pillarbox's width
                         r_oh <= rh;
                         r_ow <= (dv_q > 40'd8191) ? 13'd8191 : (dv_q < 40'd2) ? 13'd2 : dv_q[12:0];
                     end else if ((k_mode == 2'd0) == r_wide) begin
-                        r_ow <= 13'd720;
+                        r_ow <= 13'd640;
                         r_oh <= (dv_q > 40'd8191) ? 13'd8191 : (dv_q < 40'd2) ? 13'd2 : dv_q[12:0];
                     end else begin
                         r_oh <= rh;

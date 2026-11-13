@@ -1,5 +1,11 @@
 // h264/vid_pll.sv -- the raster's clock, clk_vid (docs/hd_raster.md S2, Phase 5c part 3)
 //
+// MISTER MOONLIGHT (2026-11): clk_vid is 74.277 MHz and clk_vid_dv 24.759 MHz -- the 640-pixel
+// raster's dot (h264/sync_gen.sv), 412,650 dots = exactly 1/60 s, 450,000 clk_sys cycles: clk_vid /
+// clk_sys = 2,751 / 1,000 exactly. Fractional-N (VCO 742.77 MHz = 50 x 14.8554); the K quantisation
+// (2^-32) drifts the raster against disp_ctl's grid by well under a cycle an hour, and the grid
+// re-aligns at every mode change. The text below describes the original 81 / 27 MHz clocks.
+//
 // Input:  50 MHz (FPGA_CLK2_50 via sys_top: the pin sys_pll runs from)
 // Output: outclk_0  81 MHz  clk_vid -- CLK_VIDEO; the raster side (sync_gen, the reader's and the
 //                                       overlay's read-outs, the output stage) on a dot enable:
@@ -34,23 +40,23 @@
 module vid_pll (
 	input  wire refclk,
 	input  wire rst,
-	output wire outclk_0, // 81 MHz -- clk_vid
-	output wire outclk_1, // 27 MHz -- clk_vid_dv: the HDMI transmitter's clock on direct_video (below)
+	output wire outclk_0, // 74.277 MHz -- clk_vid
+	output wire outclk_1, // 24.759 MHz -- clk_vid_dv: the HDMI transmitter's clock on direct_video (below)
 	output wire locked
 );
 
 `ifdef QUARTUS
 
 	altera_pll #(
-		.fractional_vco_multiplier("false"),
+		.fractional_vco_multiplier("true"),
 		.reference_clock_frequency("50.0 MHz"),
 		.operation_mode("direct"),
 		.number_of_clocks(2),
-		.output_clock_frequency0("81.000000 MHz"),
+		.output_clock_frequency0("74.277000 MHz"),
 		.phase_shift0("0 ps"),
 		.duty_cycle0(50),
-		.output_clock_frequency1("27.000000 MHz"),
-		.phase_shift1("6173 ps"),
+		.output_clock_frequency1("24.759000 MHz"),
+		.phase_shift1("6732 ps"),
 		.duty_cycle1(50),
 		.output_clock_frequency2("0 MHz"),
 		.phase_shift2("0 ps"),

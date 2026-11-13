@@ -62,10 +62,16 @@ jobs:
         run: |
           cat output_files/H264.fit.summary 2>/dev/null || true
           cat output_files/H264.sta.summary 2>/dev/null || true
-          grep -E "Worst-case (setup|hold) slack is" build.log | sed 's/^/::notice::/' || true
-          setup=$(grep -oE "Worst-case setup slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
-          hold=$(grep -oE "Worst-case hold slack is -?[0-9.]+" build.log | awk '{print $NF}' | sort -g | head -1)
-          tns=$(awk '/^Type/ {s = ($3 == "Setup")} /^TNS/ && s {t += $3} END {printf "%.3f", t}' output_files/H264.sta.summary 2>/dev/null)
+          # worst setup / hold slack and setup TNS over the corners, from the STA summary; the
+          # framework's pll_hdmi (reconfigured by Main at run time) is not scored
+          read setup hold tns < <(awk '
+            /^Type/  { skip = ($0 ~ /pll_hdmi/); kind = ($0 ~ / Setup /) ? "S" : ($0 ~ / Hold /) ? "H" : "" }
+            /^Slack/ && !skip && kind == "S" { if (s == "" || $3 + 0 < s + 0) s = $3 }
+            /^Slack/ && !skip && kind == "H" { if (h == "" || $3 + 0 < h + 0) h = $3 }
+            /^TNS/   && !skip && kind == "S" { tn += $3 }
+            END { printf "%s %s %.3f\n", (s == "" ? "nan" : s), (h == "" ? "nan" : h), tn }' \
+            output_files/H264.sta.summary 2>/dev/null || echo "nan nan nan")
+          echo "::notice::seed ${{ matrix.seed }}: worst setup ${setup}, worst hold ${hold}, setup TNS ${tns} (pll_hdmi not scored)"
           mkdir -p timing && echo "${{ matrix.seed }} ${setup:-nan} ${hold:-nan} ${tns:-nan}" > timing/seed${{ matrix.seed }}.txt
           cat timing/seed${{ matrix.seed }}.txt
           exit $(cat build.rc)

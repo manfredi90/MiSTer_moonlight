@@ -51,7 +51,7 @@ localparam [11:0] BARS_END = 12'd320;  // first line of the band
 localparam [11:0] MK_Y0    = 12'd400;
 localparam [11:0] MK_Y1    = 12'd432;
 localparam [11:0] MK_W     = 12'd32;
-localparam [11:0] MK_LAST  = 12'd688;  // 720 - MK_W: the last x with the whole marker on screen
+localparam [11:0] MK_LAST  = 12'd608;  // 640 - MK_W (MiSTer Moonlight: the 640-pixel raster)
 
 // ---- the marker's position, advanced once per frame --------------------------------
 reg [11:0] mx, mx_e;    // the marker's left edge, and (hd_raster: a register, not an adder on the 81 MHz path) its right

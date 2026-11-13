@@ -1,4 +1,17 @@
-// h264/sync_gen.sv -- the core's raster: 720x480 / 720x576, progressive or interlaced, at 27 MHz
+// h264/sync_gen.sv -- the core's raster: 640x480, progressive or interlaced, and 640x240p, all at
+// exactly 60.000 Hz on a 24.759 MHz dot (MiSTer Moonlight; see "MISTER MOONLIGHT" below)
+//
+// MISTER MOONLIGHT (2026-11): the raster is 640 square pixels wide (no horizontal scaling of a 640 or
+// 320 wide game stream) and every mode runs at exactly 60.000 Hz with constant line lengths, so a
+// 60 fps stream is never dropped or repeated. The dot is clk_vid / 3 = 24.759 MHz (vid_pll):
+//   480p  786 dots a line (640 + 16 / 62 / 68), 525 lines = 412,650 dots = 1/60 s
+//   480i  1,572 dots a line (every value doubled, pixel repetition), fields of 262 / 263 lines, the
+//         vsync at the half-line (786) on one field: 825,300 dots a frame = 30.000 frames / 60 fields
+//   240p  1,575 dots a line (480i's plus three in the back porch), 262 lines = 412,650 dots
+// Every refresh is 412,650 dots = 450,000 clk_sys cycles (27 MHz): disp_ctl's grid. The 59.94 Hz and
+// 50 Hz (576-line) standards and the native raster are gone: `std`, `nat` and the g_* inputs are
+// accepted and ignored (mode_std reports 1, 60.00 Hz). The history below describes the original
+// 720-dot raster.
 //
 // Inherited verbatim from MiSTer_UMD_Video (umd/sync_gen.sv). It keeps MiSTer_DVD's
 // syncgen coordinate convention, which every overlay and display module harvested from
@@ -112,10 +125,10 @@ module sync_gen (
 );
 
 // the standards' geometry (per the table above); 525-line values first, 625-line second
-localparam H_ACTIVE  = 720;
-localparam H_SS_N    = 736,  H_SS_P    = 732;           // hsync start (720 + front porch)
-localparam H_SE_N    = 798,  H_SE_P    = 796;           // hsync end
-localparam H_TOT_N   = 858,  H_TOT_P   = 864;
+localparam H_ACTIVE  = 640;
+localparam H_SS_N    = 656,  H_SS_P    = 656;           // hsync start (640 + front porch 16)
+localparam H_SE_N    = 718,  H_SE_P    = 718;           // hsync end (sync 62: 2.5 us, 5.0 us interlaced)
+localparam H_TOT_N   = 786,  H_TOT_P   = 786;           // back porch 68
 localparam V_ACT_N   = 480,  V_ACT_P   = 576;
 localparam V_VS_N    = 489,  V_VS_P    = 581;           // vsync [start, end)
 localparam V_VE_N    = 495,  V_VE_P    = 586;
@@ -144,15 +157,15 @@ always @(posedge clk or negedge rst_n)
     else if (!nat_q)  nat_go <= 1'b0;
     else if (clk_en)  nat_go <= 1'b1;
 
-wire        pal   = (std_q == 2'd2);
-wire        s60   = (std_q == 2'd1);
+wire        pal   = 1'b0;                                 // MiSTer Moonlight: 60.000 Hz only
+wire        s60   = 1'b0;
 wire        p240_req = (prog240 === 1'b1); // tolerate older named-port benches that omit this new input
 wire [11:0] p240_lines = pal ? 12'd312 : 12'd262;
 // Fixed line periods avoid the visible horizontal phase walk caused by spreading
 // fractional frame-dot remainders across active scanlines. The resulting frame
 // rates remain within 0.1% of the selected 59.94 / 50 Hz targets; exact-60
 // low-resolution requests use the same 59.94-family timing.
-wire [11:0] p240_h_tot = pal ? 12'd1731 : 12'd1720;
+wire [11:0] p240_h_tot = 12'd1575;                       // 262 x 1,575 = 412,650 dots: 60.000 Hz
 // the line's last dot: 59.94 858 / 1716; 60.00 857 / 1714 but 858 / 1716 on a long line; 50 864 / 1728
 wire [11:0] h_tot = p240_q ? p240_h_tot : nat_q ? ((v_cnt == gh_q) ? glast_q : gl_q) :
                    pal ? H_TOT_P : (s60 && m7 != 3'd0) ? (H_TOT_N - 1) : H_TOT_N;
@@ -163,8 +176,8 @@ wire [11:0] v_tot  = pal ? V_TOT_P : V_TOT_N;
 wire        h_last = p240_q ? (h_cnt == p240_h_tot - 12'd1) : il_q ? (h_cnt == ih_tot - 12'd1) : (h_cnt == h_tot - 12'd1);
 wire        v_last = il_q ? (v_cnt == (field1 ? iv_short - 12'd1 : iv_short)) : p240_q ? (v_cnt == p240_lines - 12'd1) :
                      nat_q ? (v_cnt == gnt_q - 12'd1) : (v_cnt == v_tot - 12'd1);
-wire        nat_in = nat && !interlaced && !p240_req;
-wire        mode_chg = (interlaced != il_q) || (p240_req != p240_q) || (std != std_q);
+wire        nat_in = 1'b0;                              // no native raster
+wire        mode_chg = (interlaced != il_q) || (p240_req != p240_q);
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -172,7 +185,7 @@ always @(posedge clk or negedge rst_n) begin
         v_cnt <= 12'd0;
         il_q <= 1'b0;
         p240_q <= 1'b0;
-        std_q <= 2'd0;
+        std_q <= 2'd1;
         odd_field <= 1'b1;
         m7 <= 3'd0;
         nat_q <= 1'b0; gw_q <= '0; gh_q <= '0; gl_q <= '0; gnt_q <= '0; glast_q <= '0;
@@ -181,7 +194,7 @@ always @(posedge clk or negedge rst_n) begin
             // a clean restart in the new mode, at the top field's first dot
             il_q <= interlaced;
             p240_q <= p240_req;
-            std_q <= std;
+            std_q <= 2'd1;
             h_cnt <= 12'd0;
             v_cnt <= 12'd0;
             odd_field <= 1'b1;

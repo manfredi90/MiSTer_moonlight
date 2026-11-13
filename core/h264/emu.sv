@@ -173,7 +173,7 @@ assign LOCKED    = locked & vid_locked;
 //     stock Main truncates the About line at 30 chars and splits CONF_STR on , and ;.
 //   * This string is INSIDE CONF_STR = inside the netlist, so changing it re-rolls the
 //     fit. Set it before the build that will ship, not after.
-`define CORE_VERSION "mm-0.1.0"
+`define CORE_VERSION "mm-0.2.0"
 
 // The OSD definition. Every option, button and file extension here MUST be documented
 // in the manual: tools/docs_check.py parses this block (by its terminator, never a
@@ -205,10 +205,8 @@ assign LOCKED    = locked & vid_locked;
 localparam CONF_STR = {
 	"H264;;",
 	"-;",
-	"O[22:20],Output Mode,480i60,480p60,576i50,576p50,Native HDMI;",
-	"O[27],Refresh Rate Match,Off,50/60;",
+	"O[22:20],Output Mode,480i,480p;",
 	"D2O[24],240p Playback,Off,On;",
-	"D1O[25],Play 24fps at 25fps,Off,On;",
 	"O[2],Display Shape,4:3,16:9;",
 	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
 	"h0O[7],HDMI Deinterlace,Weave,Bob;",
@@ -294,7 +292,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io_inst (
 	// the menu mask: bit 0 = the 480i raster is on (CONF_STR's H0 / h0 swap the in-core
 	// Deinterlace line for ascal's HDMI Bob / Weave: the menu never offers what the
 	// raster cannot do, docs/display.md S1)
-	.status_menumask ({13'd0, 1'b0, !film_speed_allowed, interlaced_eff}),
+	.status_menumask ({13'd0, 1'b0, 1'b1, interlaced_eff}),
 
 	// interface 0.6: the input, mirrored into the control block by h264/ring_in.sv
 	.joystick_0     (joystick_0), .joystick_1 (joystick_1), .joystick_2 (joystick_2),
@@ -1306,28 +1304,14 @@ disp_fit disp_fit_inst (
 // off (to go back to fitted); between streams it HOLDS -- a seek never flips the raster to 720 and
 // back. Its inputs change at the pickup (sh_*, the latched display and Native): the geometry is
 // ready long before sync_gen takes it at the next frame's first dot.
-raster_geom raster_geom_inst (
-	.clk    (clk_sys),
-	.rst_n  (reset_n),
-	.en     (sh_valid | ~nat_req_l),        // a picture shown (stream_live), or Native off
-	.req    (nat_req_l),
-	.wc     (fit_wc),
-	.hc     (fit_hc),
-	.sar_w  (fit_sar_w),
-	.sar_h  (fit_sar_h),
-	.w_mbs  (sh_w),
-	.dw     (fit_dw_l),
-	.dh     (fit_dh_l),
-	.std    (raster_std),
-	.mode   (geom_mode),
-	.rw     (geom_rw),
-	.rh     (geom_rh),
-	.disp   (geom_disp),
-	.l      (geom_l),
-	.nt     (geom_nt),
-	.last   (geom_last),
-	.busy   ()
-);
+// MISTER MOONLIGHT (2026-11): no native raster -- the fitted 640 x 480 raster always (sync_gen)
+assign geom_mode = 2'd0;
+assign geom_rw   = 12'd640;
+assign geom_rh   = 12'd480;
+assign geom_disp = 1'b0;
+assign geom_l    = 12'd0;
+assign geom_nt   = 12'd0;
+assign geom_last = 12'd0;
 
 wire  [7:0] pic_r, pic_g, pic_b;
 wire        pic_de;
@@ -1588,20 +1572,16 @@ end
 wire       match_playback = stream_live | rate_v; // the prepared head precedes its first shown picture
 wire [2:0] output_profile = status[22:20];  // 0 480i60, 1 480p60, 2 576i50, 3 576p50, 4 Native HDMI
 // Read only the active option bit: a former saved 48/50/60 value (binary 10) becomes Off.
-wire [1:0] match_refresh = status[27] ? 2'd1 : 2'd0;
-wire       film_speed_allowed = (output_profile == 3'd2 || output_profile == 3'd3) && match_refresh == 0;
+wire [1:0] match_refresh = 2'd0;
 wire [2:0] effective_profile;
-assign prog240_eff = status[24] && interlaced_eff && match_playback && !geom_nat;
-display_policy display_policy_inst (
-	.profile          (output_profile),
-	.match_refresh    (match_refresh),
-	.playing          (match_playback),
-	.source_std       (std_auto_l),
-	.video_out        (video_out_eff),
-	.interlaced       (interlaced_eff),
-	.raster_std       (raster_std),
-	.effective_profile(effective_profile)
-);
+assign prog240_eff = status[24] && interlaced_eff && match_playback;
+// MISTER MOONLIGHT (2026-11): two profiles, both 60.000 Hz (h264/sync_gen.sv): 480i (the saved
+// 576i value too) and 480p (576p / Native too). No refresh matching, no film speed.
+wire interlaced_profile = (output_profile == 3'd0) || (output_profile == 3'd2);
+assign video_out_eff     = interlaced_profile ? 2'd1 : 2'd2;
+assign interlaced_eff    = interlaced_profile;
+assign raster_std        = 2'd1;
+assign effective_profile = interlaced_profile ? 3'd0 : 3'd1;
 // Matching temporarily follows the prepared source. Native retains exact 60 Hz; fitted modes use 59.94.
 assign raster_pal     = raster_std[1];
 // ---- (hd_raster) the crossings of the raster side (docs/hd_raster.md S3) ---------------------
@@ -1969,7 +1949,7 @@ ring_words_sys ring_words_sys_inst (
 	.f_display_refresh_match_mode (match_refresh),
 	.f_display_240p (status[24]),
 	.f_display_240p_active (prog240_eff),
-	.f_display_film_speed (status[25] && film_speed_allowed),
+	.f_display_film_speed (1'b0),
 	.f_display_wide (status[2]),
 	.f_display_effective_profile ({1'b0, effective_profile}),
 	.f_display_raster_std (raster_std),

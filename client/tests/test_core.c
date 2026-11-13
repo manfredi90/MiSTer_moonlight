@@ -77,7 +77,7 @@ static uint64_t *ringmem;
 static pthread_mutex_t core_mx = PTHREAD_MUTEX_INITIALIZER;
 static struct {
   int booted, sess, stop, dead, il;
-  uint32_t seen, rw, seq, ack, fe_err, refresh, ver;
+  uint32_t seen, rw, seq, ack, fe_err, refresh, ver, raster_w;
   uint64_t w87;
 } core;
 struct sess { uint32_t start; uint8_t *b; size_t n, cap; };
@@ -110,6 +110,8 @@ static void core_status(void) {
   PUT(CAP_NATIVE_H, 480);
   PUT(CAP_MB_RATE, 108000);
   ctrl[87] = core.w87;
+  PUT(RASTER_W, core.raster_w);
+  PUT(RASTER_H, core.raster_w ? 480 : 0);
   uint32_t g = lo(H264RING_W_OVL_GEN_LO);
   PUT(OVL_GEN, g);
   PUT(OVL_STATE, (lo(H264RING_W_OVL_CTL) >> H264RING_OVL_CTL_ENABLE_BIT) & 1);
@@ -304,6 +306,21 @@ int main(int argc, char **argv) {
   mg_core_overlay_present(canvas, 320, 240);
   CHECK("il disegno successivo va nell'altra pagina", lo(H264RING_W_OVL_BASE) != base1);
 
+  /* il core di core/: raster largo 640 (parola 80) -> overlay 640, x2 esatto senza sfumature */
+  core.raster_w = 640; usleep(2000);
+  mg_core_overlay_present(canvas, 320, 240);
+  {
+    const uint32_t *pg = (const uint32_t *)(fbmem + (lo(H264RING_W_OVL_BASE) - H264RING_FB_BYTE));
+    int ok = lo(H264RING_W_OVL_SIZE) == ((480u << 16) | 640u) && lo(H264RING_W_OVL_STRIDE) == 2560;
+    for (int y = 0; y < 480 && ok; y += 3)
+      for (int x = 0; x < 640 && ok; x++)
+        ok = pg[y * 640 + x] == (canvas[(y / 2) * 320 + x / 2] | 0xFF000000u);
+    CHECK("raster di 640: overlay 640x480, ogni pixel del canvas esattamente x2", ok);
+  }
+  core.raster_w = 0; usleep(2000);
+  mg_core_overlay_present(canvas, 320, 240);
+  CHECK("raster di nuovo 720: overlay 720", lo(H264RING_W_OVL_SIZE) == ((480u << 16) | 720u));
+
   mg_core_info ci;
   mg_core_get_info(&ci);
   CHECK("Refresh Rate Auto: si chiede 59.94 a Sunshine", ci.refresh_x100 == 5994 && ci.max_mbs == 3600);
@@ -329,6 +346,12 @@ int main(int argc, char **argv) {
   core.w87 = (1u << 13) | (2u << 11) | (1u << 4); usleep(2000);
   mg_core_get_info(&ci);
   CHECK("... a 50 Hz (288p): 49.99", ci.p240 && ci.refresh_x100 == 4999);
+  core.w87 = (1u << 13) | (1u << 11) | (1u << 4); usleep(2000);
+  mg_core_get_info(&ci);
+  CHECK("core di questo repository (60,000 Hz) col 240p: si chiede 60", ci.p240 && ci.refresh_x100 == 6000);
+  core.w87 = (1u << 13) | (1u << 11); usleep(2000);
+  mg_core_get_info(&ci);
+  CHECK("... e senza 240p: 480i a 60", !ci.p240 && ci.interlaced && ci.refresh_x100 == 6000);
   core.w87 = (1u << 13); usleep(2000);
   mg_core_get_info(&ci);
   CHECK("... senza 240p: 480i a 59.94", !ci.p240 && ci.interlaced && ci.refresh_x100 == 5994);

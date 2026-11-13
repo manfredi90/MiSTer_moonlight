@@ -78,7 +78,8 @@ static struct h264ring_fb fb;
 static bool fb_ok;
 static unsigned ovl_fmt, ovl_bpp, ovl_pages, ovl_page;
 static uint32_t ovl_page_bytes;
-static int ovl_gen, ovl_w, ovl_h;
+static int ovl_gen, ovl_w, ovl_h;   /* ovl_w: la larghezza del raster dell'ultimo disegno */
+static int ovl_max_w;
 static bool ovl_shown;
 
 static uint64_t now_ms(void) {
@@ -221,7 +222,7 @@ void mg_core_get_info(mg_core_info *ci) {
     bool il = (w87 >> 13) & 1u, p240 = (w87 >> 4) & 1u;
     ci->p240 = p240 && il;
     if (ci->p240)
-      ci->refresh_x100 = std == 2 ? 4999 : 5991;
+      ci->refresh_x100 = std == 2 ? 4999 : std == 1 ? 6000 : 5991;   /* 1: il core di core/ (60,000 Hz) */
     else
       ci->refresh_x100 = std == 2 ? 5000 : std == 1 ? 6000 : 5994;
     ci->interlaced = il && !ci->p240;
@@ -239,6 +240,9 @@ void mg_core_get_info(mg_core_info *ci) {
     ci->interlaced = H264RING_ST(&st, RASTER_IL) != 0;
   }
   ci->raster_h = ci->refresh_x100 == 5000 || ci->refresh_x100 == 4999 ? 576 : 480;
+  struct h264ring_raster rs;
+  h264ring_raster(&st, &rs);
+  ci->raster_w = rs.mode == H264RING_RASTER_FITTED && rs.w ? (int)rs.w : 720;
   struct h264ring_caps caps;
   h264ring_caps(&st, &caps);
   ci->max_mbs = caps.max_mbs;
@@ -250,14 +254,15 @@ void mg_core_get_info(mg_core_info *ci) {
 static bool fb_mapped; /* da h264ring_fb_map (non un framebuffer dei test) */
 
 static void overlay_layout(void) {
-  ovl_w = 720;           /* tutto il raster: 720 x 480, o 576 a 50 Hz */
+  ovl_max_w = 720;       /* il raster più largo: 720 (core originale); 640 quello di core/ */
+  ovl_w = 720;
   ovl_h = OVL_MAX_H;
   static const struct { unsigned fmt, bpp, pages; } tries[] = {
     { H264RING_OVL_FMT_8888, 4, 2 }, { H264RING_OVL_FMT_1555, 2, 2 },
     { H264RING_OVL_FMT_8888, 4, 1 }, { H264RING_OVL_FMT_1555, 2, 1 },
   };
   for (size_t i = 0; i < sizeof(tries) / sizeof(tries[0]); i++) {
-    uint32_t pb = (uint32_t)ovl_w * tries[i].bpp * (uint32_t)ovl_h;
+    uint32_t pb = (uint32_t)ovl_max_w * tries[i].bpp * (uint32_t)ovl_h;
     if (pb * tries[i].pages <= fb.len) {
       ovl_fmt = tries[i].fmt;
       ovl_bpp = tries[i].bpp;
@@ -275,7 +280,7 @@ static void overlay_layout(void) {
     return;
   }
   memset(fb.virt, 0, (size_t)ovl_page_bytes * ovl_pages);
-  printf("[core] overlay fino a %dx%d, %u byte per pixel, %u pagine (framebuffer %u byte)\n", ovl_w, ovl_h, ovl_bpp,
+  printf("[core] overlay fino a %dx%d, %u byte per pixel, %u pagine (framebuffer %u byte)\n", ovl_max_w, ovl_h, ovl_bpp,
          ovl_pages, (unsigned)fb.len);
 }
 
@@ -309,6 +314,19 @@ static uint32_t ovl_px(uint32_t c) {
 /* una riga del canvas allargata a tutto il raster (320 -> 720: x2,25, interpolata come fa il
  * core col video: sul CRT non si vedono colonne larghe 2 e 3 pixel alternate) */
 static void ovl_line(uint8_t *dst, const uint32_t *src, int w) {
+  if (ovl_w == 2 * w) {          /* raster di 640 (core/): x2 esatto, niente interpolazione */
+    for (int x = 0; x < w; x++) {
+      uint32_t v = ovl_px(src[x]);
+      if (ovl_bpp == 4) {
+        ((uint32_t *)dst)[2 * x] = v;
+        ((uint32_t *)dst)[2 * x + 1] = v;
+      } else {
+        ((uint16_t *)dst)[2 * x] = (uint16_t)v;
+        ((uint16_t *)dst)[2 * x + 1] = (uint16_t)v;
+      }
+    }
+    return;
+  }
   for (int x = 0; x < ovl_w; x++) {
     int pos = (int)(((2 * x + 1) * w * 256LL) / (2 * ovl_w)) - 128; /* centro del pixel, 1/256 */
     if (pos < 0) pos = 0;
@@ -339,10 +357,12 @@ static void ovl_fill(uint8_t *dst, uint32_t c) {
  * larghezza piena del CRT), righe doppie, al centro in altezza a 576 righe (sopra e sotto
  * il colore del suo angolo): non si vede niente del core sotto */
 int mg_core_overlay_present(const uint32_t *canvas, int w, int h) {
-  if (!fb_ok || !ring || w < 2 || w > ovl_w || h * 2 > OVL_MAX_H)
+  if (!fb_ok || !ring || w < 2 || w > ovl_max_w || h * 2 > OVL_MAX_H)
     return -1;
   mg_core_info ci;
   mg_core_get_info(&ci);
+  /* largo quanto il raster del core (parola 80): 720 sul core originale, 640 su quello di core/ */
+  ovl_w = ci.raster_w >= 2 * w && ci.raster_w <= ovl_max_w ? ci.raster_w : ovl_max_w;
   int oh = ci.raster_h > 0 && ci.raster_h <= OVL_MAX_H ? ci.raster_h : 480;
   if (h * 2 > oh)
     oh = h * 2;

@@ -117,7 +117,7 @@ module ovl_plane (
     // sync_gen's `lines` is still the old frame's -- centred on that, the first frame after a native
     // size change showed the canvas off by half the change (found by n8888hd: 480 -> 720 lines)
     wire  [11:0] lines_n = il ? (pal ? 12'd576 : 12'd480) : rast_h;
-    wire  [11:0] rw    = il ? 12'd720 : rast_w;
+    wire  [11:0] rw    = il ? 12'd640 : rast_w;      // MiSTer Moonlight: the 640-pixel raster
     wire [11:0]  raster_y = prog240_i ? {v_pos[10:0], 1'b0} : v_pos;
     wire         vb_first = il ? (v_pos[11:1] == lines[11:1]) : (raster_y == lines);
 
