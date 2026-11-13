@@ -22,8 +22,14 @@ derive_clock_uncertainty
 # H264-FORK (2026-10-03, docs/hd_raster.md S2): the raster's clock, emu|vid_pll (81 MHz, a second
 # PLL from the same pin), joins the core group: its crossings with clk_sys / clk_mem are timed and
 # bounded by name in h264/h264.sdc. In no group it would be timed against every framework clock.
+# MISTER MOONLIGHT (2026-11): vid_pll now runs the 640-pixel raster's 74.277 / 24.759 MHz (fractional,
+# h264/vid_pll.sv) -- no longer a whole multiple of clk_sys, so TimeQuest's edge pairs between the two
+# PLLs are meaningless (a hold relation of tens of ns). Every transfer across goes through a crossing
+# primitive (cdc_snap, cdc_pulse, the toggles and line slots bounded in h264/h264.sdc; vid_pll's comment
+# says the phase was always treated as unrelated): its own group, asynchronous to the core's.
 set_clock_groups -exclusive \
-   -group [get_clocks { *|pll|pll_inst|altera_pll_i|*[*].*|divclk *|sys_pll|altera_pll_i|*[*].*|divclk *|vid_pll|altera_pll_i|*[*].*|divclk}] \
+   -group [get_clocks { *|pll|pll_inst|altera_pll_i|*[*].*|divclk *|sys_pll|altera_pll_i|*[*].*|divclk}] \
+   -group [get_clocks { *|vid_pll|altera_pll_i|*[*].*|divclk}] \
    -group [get_clocks { pll_hdmi|pll_hdmi_inst|altera_pll_i|*[0].*|divclk}] \
    -group [get_clocks { pll_audio|pll_audio_inst|altera_pll_i|*[0].*|divclk}] \
    -group [get_clocks { spi_sck}] \

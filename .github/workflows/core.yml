@@ -76,6 +76,28 @@ jobs:
           cat timing/seed${{ matrix.seed }}.txt
           exit $(cat build.rc)
 
+      # the worst setup and hold paths (one per endpoint), to see which logic fails timing
+      - name: Worst paths
+        if: always()
+        run: |
+          [ -f output_files/H264.sta.rpt ] || exit 0
+          cat > worst.tcl <<'EOT'
+          project_open H264
+          create_timing_netlist
+          read_sdc
+          update_timing_netlist
+          foreach kind {setup hold} {
+            foreach_in_collection p [get_timing_paths -$kind -npaths 25 -nworst 1] {
+              puts [format "%s %8.3f %s -> %s | %s -> %s" [string toupper $kind] [get_path_info $p -slack] \
+                [get_clock_info -name [get_path_info $p -from_clock]] [get_clock_info -name [get_path_info $p -to_clock]] \
+                [get_node_info -name [get_path_info $p -from]] [get_node_info -name [get_path_info $p -to]]]
+            }
+          }
+          project_close
+          EOT
+          docker run --rm -v "$PWD":/build -w /build theypsilon/quartus-lite-c5:17.0.2.docker0 \
+            /opt/intelFPGA_lite/quartus/bin/quartus_sta -t worst.tcl 2>&1 | grep -E "^(SETUP|HOLD)" || true
+
       - name: Log
         if: always()
         run: |
