@@ -1,0 +1,39 @@
+# After a successful core build, the kept seed's .rbf as a DRAFT release ("build-<sha>"): visible to
+# the repository's collaborators only, nothing is published. The previous build drafts are removed.
+name: draft
+
+on:
+  workflow_run:
+    workflows: [core]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  draft:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: H264_core
+          path: sd
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+
+      - name: Draft release
+        run: |
+          sha=${{ github.event.workflow_run.head_sha }}
+          tag="build-${sha:0:7}"
+          for t in $(gh release list --limit 50 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | grep '^build-' || true); do
+            gh release delete "$t" --yes || true
+          done
+          rbf=$(ls sd/_Other/*.rbf)
+          gh release create "$tag" "$rbf" --draft --target "$sha" --title "H264 core $(basename "$rbf" .rbf) (${sha:0:7})" \
+            --notes "Build of ${sha:0:7} (run ${{ github.event.workflow_run.html_url }}). Not published."
+          echo "::notice::draft $tag: $(basename "$rbf")"
