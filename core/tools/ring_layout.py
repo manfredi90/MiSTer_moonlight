@@ -380,6 +380,7 @@ WORDS = [
                  ("pll_moving", 26, 1, "(mm 1.5) the video PLL's K is gliding toward the genlock's target"),
                  ("pll_state", 27, 4, "(mm 1.5) vid_pll_tune's state (diagnostics: 1 waiting, 2-4 reading M / K, 7 idle, 8-9 writing)"),
                  ("pll_wait", 31, 1, "(mm 1.5) waitrequest was high at vid_pll_tune's last write (diagnostics)"),
+                 ("pll_fixed", 7, 1, "(mm 1.5) vid_pll_tune uses the M / K the Fitter reported (the read-back gave nothing)"),
                  ("pll_k", 32, 32, "(mm 1.5) the video PLL's delta-sigma K last written; before pll_ok, {the OR of every read's data, the M read} (diagnostics)")]),
     # 0.9: the overlay plane's status (docs/architecture.md "The overlay plane")
     (46, "sys", [("ovl_gen", 0, 32, "(0.9) the overlay: the generation of the last consistent descriptor read"),

@@ -24,6 +24,10 @@
 `default_nettype none
 
 module vid_pll_tune #(
+    // vid_pll as the Fitter builds it (H264.fit.rpt, "PLL Usage Summary": VCO 445.661998 MHz =
+    // 50 MHz x (8 + 3922335847 / 2^32), N 1, C 6 / 18): used when the read-back gives nothing
+    parameter [8:0]  M_FIX  = 9'd8,
+    parameter [31:0] K_FIX  = 32'd3922335847,
     parameter [27:0] T_WAIT = 28'd50_000_000,      // 1 s after the lock (a bench sets it small)
     parameter [19:0] T_TICK = 20'd499_999           // 10 ms a move, minus one
 ) (
@@ -37,6 +41,7 @@ module vid_pll_tune #(
                                        //   {the OR of every read's data, the M read} (diagnostics)
     output logic [3:0]  state,         // the state machine (diagnostics)
     output logic        wait_seen,     // waitrequest was high at the last write (diagnostics)
+    output logic        used_fixed,    // M_FIX / K_FIX in use (diagnostics)
     // to sys/pll_cfg
     output logic       mgmt_reset,
     input  wire        mgmt_waitrequest,
@@ -61,6 +66,7 @@ module vid_pll_tune #(
     logic [27:0] tmr;
     logic [2:0]  rcnt;                  // cycles since a read pulse
     logic [15:0] rd_or;                 // every read's data ORed (diagnostics)
+    logic        fixed;                 // M_FIX / K_FIX in use (the read-back gave nothing)
     logic [19:0] tick;
     logic [15:0] m_raw, k_lo;
     logic [31:0] k0, k_now;
@@ -85,7 +91,7 @@ module vid_pll_tune #(
         if (!lk) begin
             st <= S_RST; tmr <= '0; tick <= '0; mgmt_reset <= 1'b1; mgmt_write <= 1'b0; mgmt_read <= 1'b0;
             mgmt_address <= '0; mgmt_writedata <= '0; ok <= 1'b0; moving <= 1'b0; rcnt <= '0;
-            rd_or <= '0; m_raw <= '0; wait_seen <= 1'b0;
+            rd_or <= '0; m_raw <= '0; wait_seen <= 1'b0; fixed <= 1'b0;
         end else begin
             if (mgmt_read) mgmt_read <= 1'b0;                          // a read is one cycle
             if (rd_done) rd_or <= rd_or | mgmt_readdata[15:0];
@@ -112,8 +118,15 @@ module vid_pll_tune #(
             S_RD_KH: if (rd_done) begin
                 k0 <= {mgmt_readdata[15:0], k_lo}; st <= S_CALC;
             end
-            S_CALC: begin mk <= {m_val, k0}; st <= S_STEP; end
-            S_STEP: begin step <= mk[40:16]; k_now <= k0; ok <= (m_val != 9'd0); st <= S_IDLE; end
+            S_CALC: begin
+                if (m_val == 9'd0 || k0 == 32'd0) begin                // the read-back gave nothing
+                    mk <= {M_FIX, K_FIX}; k0 <= K_FIX; fixed <= 1'b1;
+                end else begin
+                    mk <= {m_val, k0}; fixed <= 1'b0;
+                end
+                st <= S_STEP;
+            end
+            S_STEP: begin step <= mk[40:16]; k_now <= k0; ok <= 1'b1; st <= S_IDLE; end
             S_IDLE: begin
                 moving <= ok && (k_tgt != k_now);
                 if (ok && tick == T_TICK && k_tgt != k_now) begin k_wr <= k_next; st <= S_WR_K; end
@@ -134,6 +147,7 @@ module vid_pll_tune #(
     end
     assign k_out = ok ? k_now : {rd_or, m_raw};
     assign state = st;
+    assign used_fixed = fixed;
 endmodule
 
 `default_nettype wire

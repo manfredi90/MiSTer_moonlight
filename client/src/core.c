@@ -740,8 +740,9 @@ static void guard_report(void) {
            (g.D + 3 * g.mad + 700) / 1000,
            g.gl_trim, g.gl_integ, g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.misses);
   if (g.gl_state == 2 || g.gl_pll_fail)
-    printf("[genlock] PLL video: %s%s, stato %u%s, %s 0x%08x\n",
+    printf("[genlock] PLL video: %s%s%s, stato %u%s, %s 0x%08x\n",
            (g.w45 >> 25) & 1 ? "letto" : "NON letto (il core non lo muove)",
+           (g.w45 >> 7) & 1 ? " (valori fissi del Fitter: la lettura non ha dato niente)" : "",
            (g.w45 >> 26) & 1 ? ", in movimento" : "", (unsigned)(g.w45 >> 27) & 15u,
            (g.w45 >> 31) & 1 ? ", waitrequest alto" : "",
            (g.w45 >> 25) & 1 ? "K" : "letture (OR, M)", (unsigned)(g.w45 >> 32));

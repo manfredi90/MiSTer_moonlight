@@ -13,15 +13,24 @@ reg  [31:0] mrdata;
 reg  [1:0]  cnt = 0;
 wire        mwait = mwrite && cnt != 2'd3;
 always @(posedge clk) cnt <= mwrite ? (cnt == 2'd3 ? 2'd0 : cnt + 1'b1) : 2'd0;
+`ifdef ZERO_READS   // the read-back gives nothing: the Fitter's M_FIX / K_FIX are used
+localparam [15:0] M_RAW = 16'h0000;
+localparam [31:0] K0_RD = 32'h0;
+localparam [31:0] K0 = 32'd3922335847;
+localparam [8:0]  MM = 9'd8;
+`else
 localparam [15:0] M_RAW = 16'h0707;              // M = 14
-localparam [31:0] K0 = 32'hDAFF_1234;
+localparam [31:0] K0_RD = 32'hDAFF_1234;
+localparam [31:0] K0 = K0_RD;
+localparam [8:0]  MM = 9'd14;
+`endif
 reg  [31:0] rd_d [0:3];
 reg  [31:0] rd_val;
 always @(*) begin
     rd_val = 32'h0;
     if (mread && maddr == 6'd4) rd_val = {16'h0, M_RAW};
-    if (mread && maddr == 6'h20 && mwdata[5:0] == 6'h18) rd_val = {16'h0, K0[15:0]};
-    if (mread && maddr == 6'h20 && mwdata[5:0] == 6'h19) rd_val = {16'h0, K0[31:16]};
+    if (mread && maddr == 6'h20 && mwdata[5:0] == 6'h18) rd_val = {16'h0, K0_RD[15:0]};
+    if (mread && maddr == 6'h20 && mwdata[5:0] == 6'h19) rd_val = {16'h0, K0_RD[31:16]};
 end
 reg  [3:0] rd_pipe = 0;
 always @(posedge clk) begin
@@ -37,7 +46,7 @@ vid_pll_tune #(.T_WAIT(28'd100), .T_TICK(20'd49)) dut (
     .mgmt_address(maddr), .mgmt_writedata(mwdata));
 integer fails = 0, nk = 0, ngo = 0, bigmove = 0;
 reg [31:0] k = K0, pend;
-wire [40:0] mk = {9'd14, K0};
+wire [40:0] mk = {MM, K0};
 wire [24:0] step = mk[40:16];
 always @(posedge clk) if (mwrite && !mwait) begin
     if (maddr == 6'd7) begin
@@ -69,7 +78,7 @@ initial begin
     if (kout !== k) begin $display("FAIL: k_out %h, K %h", kout, k); fails++; end
     if (nk != ngo) begin $display("FAIL: %0d K writes, %0d starts", nk, ngo); fails++; end
     if (fails) begin $display("FAIL: vid_pll_tune_tb"); $fatal(1); end
-    $display("PASS: vid_pll_tune_tb (%0d moves; a step is %0d of K = %.1f ppm)", nk, step, 1e6 * step / (14.0 * 4294967296.0 + K0));
+    $display("PASS: vid_pll_tune_tb (%0d moves; a step is %0d of K = %.1f ppm)", nk, step, 1e6 * step / (MM * 4294967296.0 + K0));
     $finish;
 end
 endmodule

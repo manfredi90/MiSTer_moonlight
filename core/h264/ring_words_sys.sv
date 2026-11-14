@@ -77,6 +77,7 @@ module ring_words_sys (
     input  wire  [0:0] f_pll_moving,        // w45: (mm 1.5) the video PLL's K is gliding toward the genlock's target
     input  wire  [3:0] f_pll_state,         // w45: (mm 1.5) vid_pll_tune's state (diagnostics: 1 waiting, 2-4 reading M / K, 7 idle, 8-9 writing)
     input  wire  [0:0] f_pll_wait,          // w45: (mm 1.5) waitrequest was high at vid_pll_tune's last write (diagnostics)
+    input  wire  [0:0] f_pll_fixed,         // w45: (mm 1.5) vid_pll_tune uses the M / K the Fitter reported (the read-back gave nothing)
     input  wire  [31:0] f_pll_k,             // w45: (mm 1.5) the video PLL's delta-sigma K last written; before pll_ok, {the OR of every read's data, the M read} (diagnostics)
     input  wire  [31:0] f_ovl_gen,           // w46: (0.9) the overlay: the generation of the last consistent descriptor read
     input  wire  [1:0] f_ovl_state,         // w46: (0.9) 0 off, 1 accepted (shown while a session is open), 2 refused
@@ -151,7 +152,7 @@ module ring_words_sys (
             7'd42: begin w[31:0] = f_aud_gap; w[63:32] = f_aud_late; end
             7'd43: begin w[15:0] = f_aud_underruns; w[31:16] = f_aud_slip_drop; w[47:32] = f_aud_slip_rep; w[63:48] = f_aud_anchor; end
             7'd44: begin w[31:0] = f_aud_offset; w[63:32] = f_aud_hold_bytes; end
-            7'd45: begin w[0:0] = f_paused; w[1:1] = f_ctl_err; w[15:8] = f_atten; w[23:16] = f_gl_trim; w[24:24] = f_gl_en; w[25:25] = f_pll_ok; w[26:26] = f_pll_moving; w[30:27] = f_pll_state; w[31:31] = f_pll_wait; w[63:32] = f_pll_k; end
+            7'd45: begin w[0:0] = f_paused; w[1:1] = f_ctl_err; w[15:8] = f_atten; w[23:16] = f_gl_trim; w[24:24] = f_gl_en; w[25:25] = f_pll_ok; w[26:26] = f_pll_moving; w[30:27] = f_pll_state; w[31:31] = f_pll_wait; w[7:7] = f_pll_fixed; w[63:32] = f_pll_k; end
             7'd46: begin w[31:0] = f_ovl_gen; w[33:32] = f_ovl_state; w[34:34] = f_ovl_at; w[35:35] = f_ovl_clip; w[39:36] = f_ovl_err; w[47:40] = f_ovl_torn; w[63:48] = f_ovl_late; end
             7'd47: begin w[11:0] = f_ar_x; w[23:12] = f_ar_y; w[63:32] = f_ovl_lines; end
             7'd80: begin w[11:0] = f_raster_w; w[23:12] = f_raster_h; w[25:24] = f_raster_mode; w[26:26] = f_raster_lb; w[28:27] = f_video_out; w[31:29] = f_colour; w[44:32] = f_pic_x0; w[60:48] = f_pic_y0; end
