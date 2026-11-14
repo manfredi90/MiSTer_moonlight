@@ -426,10 +426,10 @@ static struct {
   /* la stima della frequenza del PC all'avvio del genlock (FLL) */
   bool fll_done;
   /* il ritmo del PC (timestamp RTP) per il genlock */
-  bool rtp_have, q_init, gl_locked;
+  bool rtp_have, q_init, gl_locked, d_have;
   uint32_t rtp_last;
   int64_t rtp64;
-  double dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv;
+  double d_ref, dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv;
   float xh[G_XH];
   unsigned xh_i, xh_n, xh_cnt, gl_good;
   double fll_start, fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
@@ -602,8 +602,8 @@ static void guard_start(void) {
   g.fll_done = false;
   g.fll_start = g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
   g.fll_n = 0;
-  g.rtp_have = g.q_init = g.gl_locked = false;
-  g.dmin = g.dmin_t = g.q = g.q_tgt = g.gl_bad_t0 = g.gl_phv = 0;
+  g.rtp_have = g.q_init = g.gl_locked = g.d_have = false;
+  g.d_ref = g.dmin = g.dmin_t = g.q = g.q_tgt = g.gl_bad_t0 = g.gl_phv = 0;
   g.xh_i = g.xh_n = g.xh_cnt = g.gl_good = 0;
   gl_problem[0] = 0;
   g.gl_stuck_t0 = 0;
@@ -676,10 +676,10 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
   /* IL RITMO DEL PC, NON GLI ARRIVI. Gli arrivi si spostano con la dimensione delle immagini e col
    * Wi-Fi (uno scorrimento veloce: immagini grandi, arrivi in ritardo di vari ms): inseguirli muove
    * la frequenza del core (sul MiSTer: da 59,94 a 60,07 e 59,88 a ogni scorrimento). Il genlock segue
-   * invece il timestamp RTP di ogni immagine (l'orologio del PC, 90 kHz): v = rtp + il ritardo minimo
-   * visto (che sale di 100 us al secondo per seguire la deriva tra i due orologi) è l'arrivo che
-   * l'immagine avrebbe senza code né dimensione. Il ritardo in più di ogni immagine (x) dà il
-   * margine: il 97 % degli x degli ultimi 10 s, che cambia al massimo di 0,3 ms al secondo. */
+   * invece il timestamp RTP di ogni immagine (l'orologio del PC, 90 kHz): v = rtp + il ritardo di base
+   * (il 3 % dei ritardi degli ultimi 10 s, che segue anche la deriva tra i due orologi) è l'arrivo che
+   * l'immagine avrebbe senza code né dimensione. Il margine è il 97 % dei ritardi meno la base, e
+   * cambia al massimo di 0,15 ms al secondo (agganciata, la fase ne segue 0,18). */
   double phv = 0;
   bool have_v = false;
   if (g.gl_state == 2) {
@@ -689,24 +689,31 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
     double rtp_us = (double)g.rtp64 * (1e6 / 90000.0);
     double d = w - rtp_us;
     double dt_q = g.dmin_t ? (w - g.dmin_t) / 1e6 : 0;
-    if (!g.dmin_t) g.dmin = d;
-    else g.dmin = fmin(d, g.dmin + 100.0 * dt_q);
     g.dmin_t = w;
-    double x = d - g.dmin;
-    g.xh[g.xh_i] = (float)x;
+    /* un salto del timestamp (l'inizio dello stream, la rete appena pronta): si ricomincia */
+    if (!g.d_have || fabs(d - (g.d_ref + g.dmin)) > 500000) {
+      if (g.d_have) printf("[genlock] salto di %.0f ms tra timestamp e arrivi: si ricomincia la misura\n",
+                           (d - (g.d_ref + g.dmin)) / 1000);
+      g.d_have = true; g.d_ref = d; g.dmin = 0; g.xh_i = g.xh_n = g.xh_cnt = 0; g.q_init = false;
+    }
+    g.xh[g.xh_i] = (float)(d - g.d_ref);
     g.xh_i = (g.xh_i + 1) % G_XH;
     if (g.xh_n < G_XH) g.xh_n++;
-    if (++g.xh_cnt >= 30 && g.xh_n >= 60) {            /* ogni mezzo secondo: il 97 % */
+    if (++g.xh_cnt >= 30 && g.xh_n >= 60) {
+      /* ogni mezzo secondo, sui ritardi delle ultime 600 immagini: la base è il 3 % (non il minimo:
+       * un solo timestamp anomalo la falserebbe per minuti -- sul MiSTer, appena acceso, un margine
+       * di 48 ms), il margine il 97 % meno la base */
       static float tmp[G_XH];
       memcpy(tmp, g.xh, sizeof(float) * g.xh_n);
       qsort(tmp, g.xh_n, sizeof(float), g_fcmp);
-      g.q_tgt = tmp[(unsigned)(g.xh_n * 0.97)];
+      g.dmin = tmp[(unsigned)(g.xh_n * 0.03)];
+      g.q_tgt = tmp[(unsigned)(g.xh_n * 0.97)] - g.dmin;
       g.xh_cnt = 0;
       if (!g.q_init) { g.q = g.q_tgt; g.q_init = true; }
     }
-    double qs = 300.0 * dt_q;
+    double qs = 150.0 * dt_q;            /* sotto i 0,18 ms al secondo che la fase agganciata può seguire */
     if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
-    phv = g_wrap(rtp_us + g.dmin - e0, P);
+    phv = g_wrap(rtp_us + g.d_ref + g.dmin - e0, P);
     have_v = g.q_init;
   }
   /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase di v dice di quanto il
