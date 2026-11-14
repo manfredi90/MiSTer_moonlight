@@ -429,7 +429,7 @@ static struct {
   bool rtp_have, q_init, gl_locked, d_have, gl_relock, p240;
   uint32_t rtp_last;
   int64_t rtp64;
-  double d_ref, dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv;
+  double d_ref, dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv, gl_eema;
   float xh[G_XH];
   unsigned xh_i, xh_n, xh_cnt, gl_good;
   double fll_start, fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
@@ -495,7 +495,10 @@ static void *guard_thread(void *arg) {
         double k = floor((s - g.t_ref) / Pe + 0.5);
         double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
-          if (++g.outliers > 30) g.samples = 0, g.outliers = 0, g.gl_relock = true;   /* persa: da capo */
+          if (++g.outliers > 30) {                                   /* persa: da capo */
+            g.samples = 0, g.outliers = 0;
+            if (g.gl_state == 2) { g.gl_relock = true; printf("[genlock] griglia dei quadri persa: si riaggancia\n"); }
+          }
         } else {
           g.outliers = 0;
           g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
@@ -615,6 +618,7 @@ static void guard_start(void) {
   g.fll_n = 0;
   g.rtp_have = g.q_init = g.gl_locked = g.d_have = g.gl_relock = false;
   g.p240 = ci.p240;
+  g.gl_eema = 5000;
   g.d_ref = g.dmin = g.dmin_t = g.q = g.q_tgt = g.gl_bad_t0 = g.gl_phv = 0;
   g.xh_i = g.xh_n = g.xh_cnt = g.gl_good = 0;
   gl_problem[0] = 0;
@@ -725,7 +729,8 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       if (!g.q_init) { g.q = g.q_tgt; g.q_init = true; }
     }
     if (!g.gl_locked) {
-      g.q = g.q_tgt;                       /* in aggancio il margine segue subito */
+      double qs = 1000.0 * dt_q;           /* in aggancio il margine segue svelto, 1 ms al secondo */
+      if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
     } else {
       double qs = 150.0 * dt_q;            /* agganciata: sotto i 0,18 ms al secondo che la fase può seguire */
       if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
@@ -778,7 +783,7 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
     double pc = e / 150.0;
     if (g.gl_relock) {
       g.gl_relock = false;
-      if (g.gl_locked) { g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0; }
+      if (g.gl_locked) { g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0; g.gl_eema = 5000; }
     }
     if (g.gl_locked) {
       g.gl_integ += e * 1e-6;
@@ -787,7 +792,7 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       if (fabs(e) > 5000) {
         if (!g.gl_bad_t0) g.gl_bad_t0 = w;
         else if (w - g.gl_bad_t0 > 10e6) {
-          g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0;
+          g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0; g.gl_eema = 5000;
           printf("[genlock] fase persa (errore %.1f ms per 10 s): si riaggancia\n", e / 1000);
         }
       } else {
@@ -795,13 +800,13 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       }
     } else {
       g.gl_integ += e * 8e-6;
-      if (fabs(e) < 800) {
-        if (++g.gl_good > 180) {
-          g.gl_locked = true;
-          printf("[genlock] agganciato: core a %.4f Hz, margine %.1f ms\n", g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.q / 1000);
-        }
-      } else {
-        g.gl_good = 0;
+      /* agganciato quando l'errore MEDIO degli ultimi ~2 s è sotto 1 ms (non ogni campione sotto 0,8:
+       * col Wi-Fi a volte non succedeva mai, e l'aggancio, che muove la frequenza quanto serve,
+       * restava per tutta la sessione) */
+      g.gl_eema += (fabs(e) - g.gl_eema) / 120.0;
+      if (++g.gl_good > 180 && g.gl_eema < 1000) {
+        g.gl_locked = true;
+        printf("[genlock] agganciato: core a %.4f Hz, margine %.1f ms\n", g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.q / 1000);
       }
     }
     if (g.gl_integ > 30) g.gl_integ = 30;
