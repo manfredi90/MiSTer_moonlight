@@ -652,8 +652,9 @@ static void guard_wait(bool idr, uint64_t *held_us) {
    * quadro, al massimo 30) impara la differenza di frequenza col PC. GL_TRIM = la frequenza del PLL
    * video in 2^-16 (0,25 us a quadro; il core ci scivola, 25 unità al secondo, senza salti di riga).
    * Guadagni scelti col modello (arrivi Wi-Fi sparsi, PC a 60,000, 59,94, ±0,15 %), dopo la stima
-   * della frequenza qui sotto: proporzionale e/200 (~3 s), integrale 2e-6 (corregge la stima). Senza
-   * la stima, guadagni così svelti con il ritardo dello scivolamento farebbero oscillare l'anello. */
+   * della frequenza qui sotto: proporzionale e/150 (~2,5 s), integrale 8e-6 (~20 s). L'integrale deve
+   * seguire il PC anche dopo la stima: sul MiSTer Sunshine mandava 59,98 immagini al secondo nei primi
+   * 20 s e 59,94 poi, e con 2e-6 restava indietro di 5 us a quadro dopo un minuto (errore 1,5-2,4 ms). */
   int gl_send = -1000;
   if (g.gl_state == 3) {
     g.gl_state = 0;
@@ -699,10 +700,10 @@ static void guard_wait(bool idr, uint64_t *held_us) {
     if (tg < 300) tg += P;
     tg = g_wrap(tg, P);
     double e = g_wrap(phi - tg + P / 2, P) - P / 2;
-    g.gl_integ += e * 2e-6;
+    g.gl_integ += e * 8e-6;
     if (g.gl_integ > 30) g.gl_integ = 30;
     if (g.gl_integ < -30) g.gl_integ = -30;
-    double corr = e / 200.0 + g.gl_integ;     /* us a quadro */
+    double corr = e / 150.0 + g.gl_integ;     /* us a quadro */
     int trim = (int)lround(corr * 65536.0 / P);
     if (trim > 127) trim = 127;
     if (trim < -127) trim = -127;
