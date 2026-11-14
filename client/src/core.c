@@ -597,11 +597,15 @@ int mg_core_attach(h264ring *r, void (*on_gone)(void), void (*on_refused)(const 
   return rc;
 }
 
+static const char *core_rbf; /* NULL: _Other/H264 */
+void mg_core_set_rbf(const char *rbf) { core_rbf = (rbf && *rbf) ? rbf : NULL; }
+
 int mg_core_open(void (*on_gone)(void), void (*on_refused)(const char *why)) {
-  printf("[core] carico il core H264...\n");
-  int rc = h264ring_launch_core(NULL, LAUNCH_MS);
+  printf("[core] carico il core H264%s%s...\n", core_rbf ? " da " : "", core_rbf ? core_rbf : "");
+  int rc = h264ring_launch_core(core_rbf, LAUNCH_MS);
   if (rc) {
-    printf("[core] il core H264 non parte (%s): serve _Other/H264_*.rbf sulla SD\n", strerror(-rc));
+    printf("[core] il core H264 non parte (%s): serve %s_*.rbf sulla SD\n", strerror(-rc),
+           core_rbf ? core_rbf : "_Other/H264");
     return rc;
   }
   h264ring *r;

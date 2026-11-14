@@ -173,7 +173,7 @@ assign LOCKED    = locked & vid_locked;
 //     stock Main truncates the About line at 30 chars and splits CONF_STR on , and ;.
 //   * This string is INSIDE CONF_STR = inside the netlist, so changing it re-rolls the
 //     fit. Set it before the build that will ship, not after.
-`define CORE_VERSION "mm-0.2.0"
+`define CORE_VERSION "mm-0.2.1-p3e"
 
 // The OSD definition. Every option, button and file extension here MUST be documented
 // in the manual: tools/docs_check.py parses this block (by its terminator, never a
@@ -205,8 +205,8 @@ assign LOCKED    = locked & vid_locked;
 localparam CONF_STR = {
 	"H264;;",
 	"-;",
-	"O[22:20],Output Mode,480i,480p;",
-	"D2O[24],240p Playback,Off,On;",
+	"O[22:20],Output Mode,15kHz,31kHz;",
+	"D2O[24],15kHz Mode,480i,240p;",
 	"O[2],Display Shape,4:3,16:9;",
 	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
 	"h0O[7],HDMI Deinterlace,Weave,Bob;",

@@ -3,7 +3,7 @@
 # Indirizzo IP del PC con Sunshine
 HOST=192.168.1.100
 
-# 1 = all'avvio mostra il menu a schermo (app, risoluzione, bitrate...; le scelte
+# 1 = all'avvio mostra il menu a schermo (app, bitrate, audio...; le scelte
 #     fatte nel menu vengono ricordate in menu.cfg)
 # 0 = avvia direttamente APP con le opzioni di EXTRA
 MENU=1

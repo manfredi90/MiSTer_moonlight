@@ -25,9 +25,15 @@ riscritto sull'ARM, che regge solo bitrate bassi.
 
 ## Impostazioni
 
-Nel menu: risoluzione chiesta a Sunshine (640x480 predefinita), bitrate (automatico =
-10 Mbps), FPS (60 come il core oppure 30), audio, chiusura dell'app all'uscita. Le scelte
-restano in `MiSTer_moonlight/menu.cfg`.
+Nel menu: bitrate (automatico = 10 Mbps), audio, chiusura dell'app all'uscita. Le scelte
+restano in `MiSTer_moonlight/menu.cfg`. Lo stream è sempre 640x480 a 60 immagini al secondo
+(quanto il core mostra 1:1); da riga di comando `-width`, `-height` e `-fps` restano per le prove.
+
+Sul PC conviene una modalità video a **60,000 Hz esatti**: la 640x480 "60 Hz" standard è in realtà
+59,94 Hz, e lo scarto fa saltare o ripetere un'immagine a raffiche ogni ~20 secondi. Va bene una
+1280x720 a 60 Hz (74,25 MHz, già esatta) oppure una 640x480 personalizzata (pannello NVIDIA,
+tempistica manuale): orizzontale 640/16/96/800, verticale 480/10/2/525, clock pixel 25,2 MHz.
+Con `-stats` il log dice ogni 10 s a quanti fps va il PC.
 
 Sunshine riceve la frequenza dei quadri del core: 59,94 a 480i (con *Refresh Rate* su Auto
 il core resta a 59,94), 50 se il core è a 50 Hz. Così nessun frame viene saltato o ripetuto.
@@ -38,8 +44,8 @@ Il core in `core/` (artefatto `H264_core` delle GitHub Actions) ha il quadro lar
 e va a **60,000 Hz esatti** in tutti i modi, con righe tutte uguali: uno stream 640x480 arriva 1:1,
 uno 320x240 esattamente x2, senza ridimensionamenti in orizzontale. Sunshine riceve 60 fps.
 
-Nell'OSD del core: *Output Mode* 480i o 480p; *240p Playback* On fa passare lo stream a 240p (il
-menu resta a 480i). Per il 240p conviene 320x240 (pixel raddoppiati) o 640x480 (righe alterne).
+Nell'OSD del core: *Output Mode* 15kHz (480i) o 31kHz (480p); a 15kHz, *15kHz Mode* 240p fa
+passare lo stream a 240p (il menu resta a 480i; lo stream 640x480 a righe alterne).
 Niente 50 Hz.
 
 Col core originale (H264 v1.1.0) il client funziona lo stesso: Sunshine riceve 59,94 fps e il

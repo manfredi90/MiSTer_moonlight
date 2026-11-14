@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.5"
+#define MG_VERSION "0.1.6"
 
 static sem_t quit_sem;
 static volatile bool stop_play;
@@ -150,7 +150,8 @@ static void usage(void) {
   printf("  -stickdpad         lascia passare le direzioni digitali che il MiSTer ricava dalla levetta\n");
   printf("  -debuginput        stampa gli input inoltrati al PC\n");
   printf("  -nomenucfg         il menu non legge menu.cfg\n");
-  printf("  -pacing            un'immagine al core solo dopo la presa della precedente (sperimentale)\n\n");
+  printf("  -pacing            un'immagine al core solo dopo la presa della precedente (sperimentale)\n");
+  printf("  -core PERCORSO     il core da caricare, senza data ed estensione (predefinito _Other/H264)\n\n");
   printf("Durante lo stream: Select+Start+LB+RB o Ctrl+Alt+Shift+Q tornano al menu,\n");
   printf("Select+Start = tasto Guide, Start tenuto 1 s = modalita' mouse.\n");
 }
@@ -206,6 +207,7 @@ static int parse(int argc, char **argv, options *o) {
     else if (!strcmp(a, "-stickdpad")) o->stick_dpad = true;
     else if (!strcmp(a, "-nomenucfg")) o->no_menu_cfg = true;
     else if (!strcmp(a, "-pacing")) o->pacing = true;
+    else if (!strcmp(a, "-core")) { NEEDV(); o->core_rbf = v; }
     else { fprintf(stderr, "Opzione sconosciuta: %s\n", a); return -1; }
   }
   if (o->width < 64 || o->height < 64 || o->width > 1920 || o->height > 1088) {
@@ -409,6 +411,7 @@ int main(int argc, char **argv) {
     usage();
     return 1;
   }
+  mg_core_set_rbf(o.core_rbf);
   if (!o.host) {
     fprintf(stderr, "Serve l'indirizzo IP del PC con Sunshine\n");
     return 1;

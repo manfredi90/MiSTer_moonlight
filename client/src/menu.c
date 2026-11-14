@@ -107,7 +107,7 @@ static void present(void) { mg_core_overlay_present(canvas, W, H); }
 typedef struct { char name[64]; int id; } app_entry;
 
 enum { ST_CONNECT, ST_PAIR, ST_MAIN, ST_MESSAGE };
-enum { IT_APP, IT_HEADER, IT_MODE, IT_BITRATE, IT_FPS, IT_AUDIO, IT_QUITAFTER,
+enum { IT_APP, IT_HEADER, IT_BITRATE, IT_AUDIO, IT_QUITAFTER,
        IT_QUITAPP, IT_REFRESH, IT_EXIT };
 
 typedef struct { int type; int app; } item;
@@ -165,12 +165,8 @@ static void cfg_load(void) {
     *eq = 0;
     char *v = eq + 1;
     v[strcspn(v, "\r\n")] = 0;
-    if (!strcmp(line, "res")) {
-      int w, h;
-      if (sscanf(v, "%dx%d", &w, &h) == 2 && mg_res_find(w, h) >= 0) { opt->width = w; opt->height = h; }
-    }
-    else if (!strcmp(line, "bitrate")) opt->bitrate = atoi(v);
-    else if (!strcmp(line, "fps")) opt->fps = atoi(v);
+    /* res= e fps= (versioni fino alla 0.1.5) si ignorano: dal menu sempre 640x480 a 60 */
+    if (!strcmp(line, "bitrate")) opt->bitrate = atoi(v);
     else if (!strcmp(line, "audio")) opt->audio = atoi(v) != 0;
     else if (!strcmp(line, "quitafter")) opt->quit_after = atoi(v) != 0;
     else if (!strcmp(line, "lastapp")) snprintf(last_app, sizeof(last_app), "%s", v);
@@ -181,8 +177,8 @@ static void cfg_load(void) {
 static void cfg_save(void) {
   FILE *f = fopen(cfg_path, "w");
   if (!f) return;
-  fprintf(f, "res=%dx%d\nbitrate=%d\nfps=%d\naudio=%d\nquitafter=%d\nlastapp=%s\n",
-          opt->width, opt->height, opt->bitrate, opt->fps, opt->audio, opt->quit_after, last_app);
+  fprintf(f, "bitrate=%d\naudio=%d\nquitafter=%d\nlastapp=%s\n",
+          opt->bitrate, opt->audio, opt->quit_after, last_app);
   fclose(f);
 }
 
@@ -320,9 +316,7 @@ static void rebuild_items(void) {
   if (!n_apps)
     items[n_items++] = (item){ IT_HEADER, -2 }; /* "nessuna app" */
   items[n_items++] = (item){ IT_HEADER, -1 };
-  items[n_items++] = (item){ IT_MODE, -1 };
   items[n_items++] = (item){ IT_BITRATE, -1 };
-  items[n_items++] = (item){ IT_FPS, -1 };
   items[n_items++] = (item){ IT_AUDIO, -1 };
   items[n_items++] = (item){ IT_QUITAFTER, -1 };
   if (server.currentGame)
@@ -340,19 +334,8 @@ static void rebuild_items(void) {
     cursor++;
 }
 
-static int mode_index(void) {
-  int i = mg_res_find(opt->width, opt->height);
-  return i < 0 ? 0 : i;
-}
-
 static void change_setting(int type, int dir) {
   switch (type) {
-  case IT_MODE: {
-    int i = (mode_index() + dir + mg_res_count()) % mg_res_count();
-    opt->width = mg_res_at(i)->w;
-    opt->height = mg_res_at(i)->h;
-    break;
-  }
   case IT_BITRATE: {
     int i = 0;
     while (i < N_BITRATES && bitrates[i] != opt->bitrate) i++;
@@ -360,7 +343,6 @@ static void change_setting(int type, int dir) {
     opt->bitrate = bitrates[(i + dir + N_BITRATES) % N_BITRATES];
     break;
   }
-  case IT_FPS: opt->fps = opt->fps ? 0 : 30; break;
   case IT_AUDIO: opt->audio = !opt->audio; break;
   case IT_QUITAFTER: opt->quit_after = !opt->quit_after; break;
   default: return;
@@ -376,16 +358,11 @@ static void item_label(const item *it, char *label, size_t ln, char *value, size
     if (server.currentGame == apps[it->app].id) snprintf(value, vn, "in corso");
     break;
   case IT_HEADER: snprintf(label, ln, "%s", it->app == -2 ? "(nessuna app in Sunshine)" : ""); break;
-  case IT_MODE:
-    snprintf(label, ln, "Risoluzione");
-    snprintf(value, vn, "< %dx%d >", opt->width, opt->height);
-    break;
   case IT_BITRATE:
     snprintf(label, ln, "Bitrate");
     if (opt->bitrate) snprintf(value, vn, "< %d kbps >", opt->bitrate);
     else snprintf(value, vn, "< auto >");
     break;
-  case IT_FPS: snprintf(label, ln, "FPS"); snprintf(value, vn, "< %s >", opt->fps ? "30" : "60 (come il core)"); break;
   case IT_AUDIO: snprintf(label, ln, "Audio"); snprintf(value, vn, "< %s >", opt->audio ? "si" : "no"); break;
   case IT_QUITAFTER: snprintf(label, ln, "Chiudi l'app all'uscita"); snprintf(value, vn, "< %s >", opt->quit_after ? "si" : "no"); break;
   case IT_QUITAPP: snprintf(label, ln, "Chiudi l'app aperta sul PC"); break;
@@ -603,6 +580,10 @@ int mg_menu_run(options *o, const char *kd) {
   }
   if (!o->no_menu_cfg)
     cfg_load();
+  /* il core è a 640 pixel e 60 Hz: dal menu sempre 640x480 a 60 immagini al secondo */
+  o->width = 640;
+  o->height = 480;
+  o->fps = 0;
 
   mg_input_start(o->pads, mg_request_quit);
   mg_input_set_mode(MG_INPUT_MENU);
