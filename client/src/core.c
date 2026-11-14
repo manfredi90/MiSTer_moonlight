@@ -414,6 +414,9 @@ static struct {
   double gl_target, gl_err;        /* fase obiettivo degli arrivi e l'errore, us */
   double gl_err_abs;               /* per -stats: errore medio assoluto */
   unsigned gl_n;
+  /* la frequenza dei quadri del core, misurata sull'orologio dell'ARM (al secondo: min / max) */
+  double r_t0, r_min, r_max;
+  unsigned r_n;
 } g = { .mx = PTHREAD_MUTEX_INITIALIZER };
 
 static double g_wrap(double x, double P) {
@@ -443,6 +446,16 @@ static void *guard_thread(void *arg) {
     uint32_t seq = (uint32_t)ctrl[H264RING_SEQ_HEAD_W];
     if (seq != last) {
       double s = 0.5 * (t_prev + t);   /* il cambio è caduto tra le due letture */
+      pthread_mutex_lock(&g.mx);
+      if (!g.r_t0) { g.r_t0 = s; g.r_n = 0; }
+      g.r_n += (uint32_t)(seq - last);
+      if (s - g.r_t0 >= 1e6) {
+        double hz = g.r_n * 1e6 / (s - g.r_t0);
+        if (!g.r_min || hz < g.r_min) g.r_min = hz;
+        if (hz > g.r_max) g.r_max = hz;
+        g.r_t0 = s; g.r_n = 0;
+      }
+      pthread_mutex_unlock(&g.mx);
       struct h264ring_status st;
       bool snap = false;
       pthread_mutex_lock(&ring_mx);
@@ -450,16 +463,18 @@ static void *guard_thread(void *arg) {
         snap = h264ring_status(ring, &st) == 0;
       pthread_mutex_unlock(&ring_mx);
       pthread_mutex_lock(&g.mx);
+      /* il periodo atteso: col genlock il core allunga / accorcia i quadri di trim / 64 righe in media */
+      double Pe = g.P + (g.gl_state == 2 ? g.gl_trim_sent / 64.0 * g.gl_L : 0.0);
       if (!g.samples) {
         g.t_ref = s;
       } else {
-        double k = floor((s - g.t_ref) / g.P + 0.5);
-        double err = s - (g.t_ref + k * g.P);
+        double k = floor((s - g.t_ref) / Pe + 0.5);
+        double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
           if (++g.outliers > 30) g.samples = 0, g.outliers = 0;   /* persa: da capo */
         } else {
           g.outliers = 0;
-          g.t_ref += k * g.P + err * (g.samples < 60 ? 0.125 : 0.03);
+          g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
         }
       }
       if (g.samples < 100000) g.samples++;
@@ -537,6 +552,7 @@ static void guard_start(void) {
   g.gl_L = g.P / ((ci.interlaced || ci.p240) ? 262.5 : 525.0);
   g.gl_err_abs = 0;
   g.gl_n = 0;
+  g.r_t0 = g.r_min = g.r_max = 0;
   pthread_mutex_unlock(&g.mx);
   if (genlock_req) {
     pthread_mutex_lock(&ring_mx);
@@ -705,6 +721,9 @@ static void guard_report(void) {
            "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",
            phi / 1000, g.mad / 1000, g.D / 1000, g.cut / 1000, g.mode ? "attivo" : "spento (arrivi lontani)",
            g.held, g.held ? g.held_us_sum / 1000 / g.held : 0.0, g.misses, g.switches);
+  if (g.r_min)
+    printf("[core] quadri a %.3f-%.3f Hz (al secondo, sull'orologio dell'ARM)\n", g.r_min, g.r_max);
+  g.r_min = g.r_max = 0;
   g.gl_err_abs = 0;
   g.gl_n = 0;
   g.held = g.misses = g.switches = g.hits = 0;
