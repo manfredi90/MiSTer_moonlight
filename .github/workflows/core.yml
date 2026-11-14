@@ -100,6 +100,14 @@ jobs:
           docker run --rm -v "$PWD":/build -w /build theypsilon/quartus-lite-c5:17.0.2.docker0 \
             /opt/intelFPGA_lite/quartus/bin/quartus_sta -t worst.tcl 2>&1 | grep -E "^(SETUP|HOLD)" || true
 
+      # the video PLL as the Fitter built it (M, N, C, the fractional K): what vid_pll_tune reads back
+      - name: PLL settings
+        if: always()
+        run: |
+          [ -f output_files/H264.fit.rpt ] || exit 0
+          awk '/; PLL Usage Summary/ {f = 1} f {print} f && /^$/ {n++; if (n > 1) exit}' output_files/H264.fit.rpt \
+            | grep -i -A90 "vid_pll" | head -120 || true
+
       - name: Log
         if: always()
         run: |

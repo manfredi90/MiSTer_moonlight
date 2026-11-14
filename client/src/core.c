@@ -389,6 +389,7 @@ static struct {
   double t_ref;                    /* l'inizio di un quadro, us (CLOCK_MONOTONIC) */
   double Pm;                       /* il periodo dei quadri misurato (col genlock cambia), us */
   uint64_t w45;                    /* l'ultima parola 45: [25] PLL letto, [26] in movimento, [63:32] K */
+  bool gl_pll_fail;                /* il core non ha letto il suo PLL: il genlock è inutile, resta la guardia */
   unsigned samples, outliers;
   /* il blocco di stato all'ultimo quadro */
   uint32_t pick, starve;
@@ -517,6 +518,13 @@ static void *guard_thread(void *arg) {
         g.have_snap = true;
         /* il genlock: il core lo applica? (parola 45: [24] GL_EN applicato, [1] parola 34 rifiutata) */
         g.w45 = st.w[45];
+        /* il genlock attivo ma il PLL del core non letto dopo 4 s: non può muoversi, si torna alla guardia */
+        if (g.gl_state == 2 && !((g.w45 >> 25) & 1) && s - g.gl_t0 > 4000000 && !g.gl_pll_fail) {
+          g.gl_pll_fail = true;
+          g.gl_state = 3;
+          printf("[genlock] il core non ha letto il suo PLL video (stato %u, letture 0x%08x): resta la guardia\n",
+                 (unsigned)(g.w45 >> 27) & 15u, (unsigned)(g.w45 >> 32));
+        }
         if (g.gl_state == 1) {
           uint64_t w45 = st.w[45];
           if ((w45 >> 24) & 1) {
@@ -557,6 +565,7 @@ static void guard_start(void) {
   g.held_us_sum = 0;
   g.gl_state = genlock_req ? 1 : 0;
   g.gl_t0 = (double)now_us();
+  g.gl_pll_fail = false;
   g.gl_trim = g.gl_trim_sent = 0;
   g.gl_integ = 0;
   g.gl_L = g.P / ((ci.interlaced || ci.p240) ? 262.5 : 525.0);
@@ -730,9 +739,12 @@ static void guard_report(void) {
            phi / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0, g.mad / 1000, g.D / 1000,
            (g.D + 3 * g.mad + 700) / 1000,
            g.gl_trim, g.gl_integ, g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.misses);
-  if (g.gl_state == 2)
-    printf("[genlock] PLL video: %s%s, K 0x%08x\n", (g.w45 >> 25) & 1 ? "letto" : "NON letto (il core non lo muove)",
-           (g.w45 >> 26) & 1 ? ", in movimento" : "", (unsigned)(g.w45 >> 32));
+  if (g.gl_state == 2 || g.gl_pll_fail)
+    printf("[genlock] PLL video: %s%s, stato %u%s, %s 0x%08x\n",
+           (g.w45 >> 25) & 1 ? "letto" : "NON letto (il core non lo muove)",
+           (g.w45 >> 26) & 1 ? ", in movimento" : "", (unsigned)(g.w45 >> 27) & 15u,
+           (g.w45 >> 31) & 1 ? ", waitrequest alto" : "",
+           (g.w45 >> 25) & 1 ? "K" : "letture (OR, M)", (unsigned)(g.w45 >> 32));
   else
     printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
            "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",

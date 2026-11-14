@@ -33,7 +33,10 @@ module vid_pll_tune #(
     input  wire  [7:0] gl_trim,        // ... GL_TRIM (async, quasi-static; taken when stable)
     output logic       ok,             // K0 / M were read
     output logic       moving,         // K is not yet at its target
-    output logic [31:0] k_out,         // the K last written (K0 before any write)
+    output logic [31:0] k_out,         // the K last written (K0 before any write); before `ok`,
+                                       //   {the OR of every read's data, the M read} (diagnostics)
+    output logic [3:0]  state,         // the state machine (diagnostics)
+    output logic        wait_seen,     // waitrequest was high at the last write (diagnostics)
     // to sys/pll_cfg
     output logic       mgmt_reset,
     input  wire        mgmt_waitrequest,
@@ -57,6 +60,7 @@ module vid_pll_tune #(
     st_t st;
     logic [27:0] tmr;
     logic [2:0]  rcnt;                  // cycles since a read pulse
+    logic [15:0] rd_or;                 // every read's data ORed (diagnostics)
     logic [19:0] tick;
     logic [15:0] m_raw, k_lo;
     logic [31:0] k0, k_now;
@@ -81,8 +85,11 @@ module vid_pll_tune #(
         if (!lk) begin
             st <= S_RST; tmr <= '0; tick <= '0; mgmt_reset <= 1'b1; mgmt_write <= 1'b0; mgmt_read <= 1'b0;
             mgmt_address <= '0; mgmt_writedata <= '0; ok <= 1'b0; moving <= 1'b0; rcnt <= '0;
+            rd_or <= '0; m_raw <= '0; wait_seen <= 1'b0;
         end else begin
             if (mgmt_read) mgmt_read <= 1'b0;                          // a read is one cycle
+            if (rd_done) rd_or <= rd_or | mgmt_readdata[15:0];
+            if (mgmt_write) wait_seen <= mgmt_waitrequest;
             rcnt <= mgmt_read ? 3'd1 : (rcnt != 3'd0 && rcnt != 3'd7) ? rcnt + 1'b1 : 3'd0;
             tick <= (tick == T_TICK) ? 20'd0 : tick + 1'b1;
             k_tgt <= clamped;
@@ -125,7 +132,8 @@ module vid_pll_tune #(
             endcase
         end
     end
-    assign k_out = k_now;
+    assign k_out = ok ? k_now : {rd_or, m_raw};
+    assign state = st;
 endmodule
 
 `default_nettype wire

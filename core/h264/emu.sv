@@ -157,6 +157,8 @@ vid_pll vid_pll (
 // through vid_pll's K alone, gliding (h264/vid_pll_tune.sv); the lines and fields never change
 wire        vt_reset, vt_wait, vt_read, vt_write, vt_moving, vt_ok;
 wire [31:0] vt_k;
+wire  [3:0] vt_state;
+wire        vt_wait_seen;
 wire  [5:0] vt_addr;
 wire [31:0] vt_rdata, vt_wdata;
 vid_pll_tune vid_pll_tune_inst (
@@ -167,6 +169,8 @@ vid_pll_tune vid_pll_tune_inst (
 	.ok               (vt_ok),
 	.moving           (vt_moving),
 	.k_out            (vt_k),
+	.state            (vt_state),
+	.wait_seen        (vt_wait_seen),
 	.mgmt_reset       (vt_reset),
 	.mgmt_waitrequest (vt_wait),
 	.mgmt_read        (vt_read),
@@ -188,11 +192,14 @@ pll_cfg vid_pll_cfg (
 	.reconfig_from_pll (vid_reconfig_from_pll)
 );
 // vid_pll_tune's state for status word 45 (diagnostics): two flops, K taken when two samples agree
-logic [1:0] vt_ok_ss, vt_mv_ss;
+logic [1:0] vt_ok_ss, vt_mv_ss, vt_ws_ss;
+logic [3:0] vt_st_s1, vt_st_s2, vt_st_s;
 logic [31:0] vt_k_s1, vt_k_s2, vt_k_s;
 wire        vt_ok_s = vt_ok_ss[1], vt_moving_s = vt_mv_ss[1];
 always_ff @(posedge clk_sys) begin
-	vt_ok_ss <= {vt_ok_ss[0], vt_ok}; vt_mv_ss <= {vt_mv_ss[0], vt_moving};
+	vt_ok_ss <= {vt_ok_ss[0], vt_ok}; vt_mv_ss <= {vt_mv_ss[0], vt_moving}; vt_ws_ss <= {vt_ws_ss[0], vt_wait_seen};
+	vt_st_s1 <= vt_state; vt_st_s2 <= vt_st_s1;
+	if (vt_st_s1 == vt_st_s2) vt_st_s <= vt_st_s2;
 	vt_k_s1 <= vt_k; vt_k_s2 <= vt_k_s1;
 	if (vt_k_s1 == vt_k_s2) vt_k_s <= vt_k_s2;
 end
@@ -222,7 +229,7 @@ assign LOCKED    = locked & vid_locked;
 //     stock Main truncates the About line at 30 chars and splits CONF_STR on , and ;.
 //   * This string is INSIDE CONF_STR = inside the netlist, so changing it re-rolls the
 //     fit. Set it before the build that will ship, not after.
-`define CORE_VERSION "mm-0.3.2-genlock-pll"
+`define CORE_VERSION "mm-0.3.3-genlock-pll"
 
 // The OSD definition. Every option, button and file extension here MUST be documented
 // in the manual: tools/docs_check.py parses this block (by its terminator, never a
@@ -2050,6 +2057,8 @@ ring_words_sys ring_words_sys_inst (
 	.f_pll_ok         (vt_ok_s),           // (mm 1.5) vid_pll_tune's state, crossed from CLK_50M
 	.f_pll_moving     (vt_moving_s),
 	.f_pll_k          (vt_k_s),
+	.f_pll_state      (vt_st_s),
+	.f_pll_wait       (vt_ws_ss[1]),
 	.f_ovl_gen        (ovl_gen),           // (interface 0.9) words 46-47: the overlay plane
 	.f_ovl_state      (ovl_state),
 	.f_ovl_at         (ovl_at),
