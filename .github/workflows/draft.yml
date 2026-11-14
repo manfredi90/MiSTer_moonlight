@@ -8,6 +8,14 @@ on:
   workflow_run:
     workflows: [core]
     types: [completed]
+  workflow_dispatch:              # again for a finished core run (its id, branch and commit)
+    inputs:
+      run_id:
+        required: true
+      branch:
+        required: true
+      sha:
+        required: true
 
 permissions:
   contents: write
@@ -15,28 +23,31 @@ permissions:
 
 jobs:
   draft:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run_id || github.event.workflow_run.id }}
+      RUN_BRANCH: ${{ inputs.branch || github.event.workflow_run.head_branch }}
+      RUN_SHA: ${{ inputs.sha || github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: H264_core
           path: sd
-          run-id: ${{ github.event.workflow_run.id }}
+          run-id: ${{ env.RUN_ID }}
           github-token: ${{ github.token }}
 
       - name: The builds branch
         run: |
-          sha=${{ github.event.workflow_run.head_sha }}
-          branch="${{ github.event.workflow_run.head_branch }}"
+          sha=$RUN_SHA
+          branch="$RUN_BRANCH"
           branch=${branch//[^A-Za-z0-9._-]/-}
           git init -q b && cd b
           git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
           if git fetch -q --depth 1 origin builds; then git read-tree --reset -u FETCH_HEAD; fi
-          git rm -q -r --ignore-unmatch "$branch" >/dev/null
+          git rm -q -r -f --ignore-unmatch "$branch" >/dev/null   # -f: the index holds it after read-tree
           mkdir -p "$branch" && cp ../sd/_Other/*.rbf "$branch/" && echo "${sha}" > "$branch/SHA"
           git add -A
           git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
@@ -47,8 +58,8 @@ jobs:
       - name: Draft release
         continue-on-error: true
         run: |
-          sha=${{ github.event.workflow_run.head_sha }}
-          branch="${{ github.event.workflow_run.head_branch }}"
+          sha=$RUN_SHA
+          branch="$RUN_BRANCH"
           branch=${branch//[^A-Za-z0-9._-]/-}
           tag="build-$branch-${sha:0:7}"
           # only this branch's previous drafts (and main's older "build-<sha>" ones)
@@ -58,5 +69,5 @@ jobs:
           done
           rbf=$(ls sd/_Other/*.rbf)
           gh release create "$tag" "$rbf" --draft --target "$sha" --title "H264 core $(basename "$rbf" .rbf) ($branch ${sha:0:7})" \
-            --notes "Build of ${sha:0:7} (run ${{ github.event.workflow_run.html_url }}). Not published."
+            --notes "Build of ${sha:0:7} (core run $RUN_ID). Not published."
           echo "::notice::draft $tag: $(basename "$rbf")"
