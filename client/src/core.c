@@ -377,7 +377,7 @@ static void pace_wait(uint64_t *held_us, bool *forced) {
  * allontana dalla scadenza con largo margine per qualche secondo; con arrivi sparsi su più di
  * mezzo quadro nessun taglio aiuta e resta spenta. */
 #define G_POLL_US     400
-#define G_XH          600         /* il genlock: i ritardi in più delle ultime 600 immagini (10 s) */
+#define G_XH          1200        /* il genlock: i ritardi delle ultime 1200 immagini (20 s) */
 #define G_MARGIN_US   1000.0
 #define G_D0_US       10500.0     /* D iniziale: 1.200 macroblocchi a ~110.000 al secondo */
 #define G_D_MIN_US    5000.0
@@ -693,8 +693,8 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
    * Wi-Fi (uno scorrimento veloce: immagini grandi, arrivi in ritardo di vari ms): inseguirli muove
    * la frequenza del core (sul MiSTer: da 59,94 a 60,07 e 59,88 a ogni scorrimento). Il genlock segue
    * invece il timestamp RTP di ogni immagine (l'orologio del PC, 90 kHz): v = rtp + il ritardo di base
-   * (il 3 % dei ritardi degli ultimi 10 s, che segue anche la deriva tra i due orologi) è l'arrivo che
-   * l'immagine avrebbe senza code né dimensione. Il margine è il 97 % dei ritardi meno la base, e
+   * (il 3 % dei ritardi degli ultimi 20 s, che segue anche la deriva tra i due orologi) è l'arrivo che
+   * l'immagine avrebbe senza code né dimensione. Il margine è il 99,5 % dei ritardi meno la base, e
    * misura solo dopo la raffica d'avvio (dalla stima della frequenza); in aggancio segue subito, da
    * agganciato cambia al massimo di 0,15 ms al secondo (la fase ne segue 0,18). */
   double phv = 0;
@@ -717,14 +717,15 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
     g.xh_i = (g.xh_i + 1) % G_XH;
     if (g.xh_n < G_XH) g.xh_n++;
     if (++g.xh_cnt >= 30 && g.xh_n >= 60) {
-      /* ogni mezzo secondo, sui ritardi delle ultime 600 immagini: la base è il 3 % (non il minimo:
-       * un solo timestamp anomalo la falserebbe per minuti -- sul MiSTer, appena acceso, un margine
-       * di 48 ms), il margine il 97 % meno la base */
+      /* ogni mezzo secondo, sui ritardi delle ultime 1200 immagini (20 s): la base è il 3 % (non il
+       * minimo: un solo timestamp anomalo la falserebbe per minuti -- sul MiSTer, appena acceso, un
+       * margine di 48 ms), il margine il 99,5 % meno la base (col 97 % un'immagine su 3-10 s arrivava
+       * oltre: un quadro saltato ogni pochi secondi; ogni ms in più è un ms di latenza) */
       static float tmp[G_XH];
       memcpy(tmp, g.xh, sizeof(float) * g.xh_n);
       qsort(tmp, g.xh_n, sizeof(float), g_fcmp);
       g.dmin = tmp[(unsigned)(g.xh_n * 0.03)];
-      g.q_tgt = tmp[(unsigned)(g.xh_n * 0.97)] - g.dmin;
+      g.q_tgt = tmp[(unsigned)(g.xh_n * 0.995)] - g.dmin;
       g.xh_cnt = 0;
       if (!g.q_init) { g.q = g.q_tgt; g.q_init = true; }
     }
