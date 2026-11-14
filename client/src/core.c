@@ -112,6 +112,8 @@ static uint32_t pace_written, pace_base;   /* scritte dall'inizio dello stream; 
 void mg_core_set_ritmo(bool on) { rt.on = on; }
 void mg_core_set_pacing(bool on) { pacing = on; }
 static bool guard_on, genlock_req;
+static char gl_problem[200];           /* perché il genlock chiesto non ha lavorato (vuoto: nessun problema) */
+const char *mg_core_genlock_problem(void) { return gl_problem; }
 void mg_core_set_guard(bool on) { guard_on = on; }
 void mg_core_set_genlock(bool on) { genlock_req = on; }
 
@@ -523,8 +525,9 @@ static void *guard_thread(void *arg) {
         if (g.gl_state == 2 && !((g.w45 >> 25) & 1) && s - g.gl_t0 > 4000000 && !g.gl_pll_fail) {
           g.gl_pll_fail = true;
           g.gl_state = 3;
-          printf("[genlock] il core non ha letto il suo PLL video (stato %u, letture 0x%08x): resta la guardia\n",
-                 (unsigned)(g.w45 >> 27) & 15u, (unsigned)(g.w45 >> 32));
+          snprintf(gl_problem, sizeof(gl_problem), "il core non legge il suo PLL video (stato %u, letture 0x%08x)",
+                   (unsigned)(g.w45 >> 27) & 15u, (unsigned)(g.w45 >> 32));
+          printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
         }
         /* ... o letto, ma ogni scrittura resta in attesa (waitrequest alto) per 3 s: il PLL non risponde */
         unsigned pst = (unsigned)(g.w45 >> 27) & 15u;
@@ -533,7 +536,8 @@ static void *guard_thread(void *arg) {
           else if (s - g.gl_stuck_t0 > 3000000 && !g.gl_pll_fail) {
             g.gl_pll_fail = true;
             g.gl_state = 3;
-            printf("[genlock] il PLL video del core non accetta le scritture (stato %u, waitrequest alto): resta la guardia\n", pst);
+            snprintf(gl_problem, sizeof(gl_problem), "il PLL video del core non accetta le scritture (stato %u)", pst);
+            printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
           }
         } else {
           g.gl_stuck_t0 = 0;
@@ -579,6 +583,7 @@ static void guard_start(void) {
   g.gl_state = genlock_req ? 1 : 0;
   g.gl_t0 = (double)now_us();
   g.gl_pll_fail = false;
+  gl_problem[0] = 0;
   g.gl_stuck_t0 = 0;
   g.gl_trim = g.gl_trim_sent = 0;
   g.gl_integ = 0;
@@ -646,7 +651,9 @@ static void guard_wait(bool idr, uint64_t *held_us) {
   if (g.gl_state == 3) {
     g.gl_state = 0;
     gl_send = 1001;                          /* togliere la richiesta */
-    printf("[genlock] il core non lo supporta: %s\n", guard_on ? "resta la guardia" : "spento");
+    if (!gl_problem[0])
+      snprintf(gl_problem, sizeof(gl_problem), "il core caricato non ha il genlock");
+    printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
   }
   if (g.gl_state == 2 && g.arrivals > 32) {
     double m = 3 * g.mad + 700;
@@ -1226,7 +1233,7 @@ static int video_submit(PDECODE_UNIT du) {
 
   uint64_t held_us;
   bool forced = false;
-  if (guard_on)
+  if (guard_on || genlock_req)               /* gli arrivi servono anche al solo genlock */
     guard_wait(idr, &held_us);
   else
     pace_wait(&held_us, &forced);

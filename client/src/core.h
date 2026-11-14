@@ -32,6 +32,8 @@ void mg_core_set_pacing(bool on);
 void mg_core_set_guard(bool on);
 /* Il genlock (core di questo repository, interfaccia mm 1.5): la fase del core segue gli arrivi */
 void mg_core_set_genlock(bool on);
+/* Dopo una sessione col genlock chiesto: perché non ha lavorato ("" se ha lavorato) */
+const char *mg_core_genlock_problem(void);
 void mg_core_tick(void);
 bool mg_core_osd_open(void);
 
