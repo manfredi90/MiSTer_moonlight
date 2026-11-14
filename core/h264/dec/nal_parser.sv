@@ -20,6 +20,13 @@
 // zero_byte is not counted), where ISO 13818-1 says the access unit it opens commences.
 // tools/h264_fe_ref.py nal_units_pos() counts the same way.
 //
+// THE ACCESS UNIT'S END (mm, roadmap P3e): in_end, with in_byte, marks the last byte of a
+// ring record (one access unit). After it the parser closes like a flush -- the held byte
+// goes out as last, now with out_end; the zeros not yet decided were trailing -- but
+// without `flushed` (the stream goes on: the next record starts with a start code). The
+// NAL unit's end is then known at its last byte, not when the next one's start code comes.
+// An end with no byte held (the record ended inside a start code) flags nothing.
+//
 // in_ready never depends on in_byte: a non-zero byte is always taken in one cycle
 // (the previously held byte leaves through the output register the same cycle, and
 // the queued zeros drain in the cycles after, in order, before the new byte can go).
@@ -36,12 +43,14 @@ module nal_parser #(
     input  wire        in_valid,
     output logic       in_ready,
     input  wire        in_flush,           // end of stream: release the held byte as last
+    input  wire        in_end,             // (P3e) with in_byte: the access unit's last byte
 
     output logic [7:0] out_byte,
     output logic       out_valid,
     input  wire        out_ready,
     output logic       out_first,
     output logic       out_last,
+    output logic       out_end,            // (P3e) with out_last: the access unit's last byte
 
     output logic [PW-1:0] in_pos,          // the position of the next input byte
     output logic [PW-1:0] out_sc_pos,      // with out_first: the NAL unit's start code
@@ -55,6 +64,7 @@ module nal_parser #(
     logic       started;                   // a start code has been seen
     logic       first_pend;                // the next data byte is a NAL header
     logic       flush_pend;
+    logic       end_pend;                  // (P3e) the access unit ended: close like a flush
     logic [PW-1:0] sc_pos;                 // the last start code seen (for the next header)
     logic [PW-1:0] held_sc;                // the held byte's, when it is a header
 
@@ -63,32 +73,36 @@ module nal_parser #(
     wire is_sc    = (zeros >= 2'd2) && (in_byte == 8'h01);
     wire is_epb   = (zeros >= 2'd2) && (in_byte == 8'h03);
 
-    assign in_ready = out_free && (zq == 2'd0) && !flush_pend;
+    assign in_ready = out_free && (zq == 2'd0) && !flush_pend && !end_pend;
     wire take = in_valid && in_ready;
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             held_b <= 8'd0; held_v <= 1'b0; held_first <= 1'b0;
-            zeros <= 2'd0; zq <= 2'd0; started <= 1'b0; first_pend <= 1'b0; flush_pend <= 1'b0;
-            out_byte <= 8'd0; out_valid <= 1'b0; out_first <= 1'b0; out_last <= 1'b0;
+            zeros <= 2'd0; zq <= 2'd0; started <= 1'b0; first_pend <= 1'b0; flush_pend <= 1'b0; end_pend <= 1'b0;
+            out_byte <= 8'd0; out_valid <= 1'b0; out_first <= 1'b0; out_last <= 1'b0; out_end <= 1'b0;
             in_pos <= '0; sc_pos <= '0; held_sc <= '0; out_sc_pos <= '0; flushed <= 1'b0;
         end else begin
             if (take) in_pos <= in_pos + 1'b1;
             flushed <= 1'b0;
             if (in_flush) flush_pend <= 1'b1;
+            if (take && in_end) end_pend <= 1'b1;
             if (out_ready) out_valid <= 1'b0;
+            if (out_free) out_end <= 1'b0;         // set again below only with an access unit's last byte
 
-            if (out_free && flush_pend) begin
-                // end of stream: the held byte is the last one; pending zeros were trailing
+            if (out_free && (flush_pend || end_pend)) begin
+                // end of stream (or of the access unit): the held byte is the last one;
+                // pending zeros were trailing
                 if (zq != 2'd0) begin
-                    out_valid <= 1'b1; out_byte <= 8'd0; out_first <= 1'b0; out_last <= 1'b0;
+                    out_valid <= 1'b1; out_byte <= 8'd0; out_first <= 1'b0; out_last <= 1'b0; out_end <= 1'b0;
                     zq <= zq - 2'd1;
                 end else begin
                     if (held_v) begin
                         out_valid <= 1'b1; out_byte <= held_b; out_first <= held_first; out_sc_pos <= held_sc; out_last <= 1'b1;
+                        out_end <= end_pend;
                     end
-                    held_v <= 1'b0; zeros <= 2'd0; flush_pend <= 1'b0; started <= 1'b0;
-                    flushed <= 1'b1;
+                    held_v <= 1'b0; zeros <= 2'd0; flush_pend <= 1'b0; end_pend <= 1'b0; started <= 1'b0;
+                    flushed <= flush_pend;
                 end
             end else if (out_free && zq != 2'd0) begin
                 out_valid <= 1'b1; out_byte <= 8'd0; out_first <= 1'b0; out_last <= 1'b0;

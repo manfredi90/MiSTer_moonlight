@@ -53,7 +53,7 @@ wire        sp_field, sp_bottom, sp_idr;
 wire [15:0] sp_frame_num, sp_poc_lsb;
 h264_top dut (
     .clk(clk), .rst_n(rst_n), .clear(1'b0),
-    .es_byte(es_byte), .es_valid(es_valid), .es_ready(es_ready), .es_flush(es_flush),
+    .es_byte(es_byte), .es_valid(es_valid), .es_ready(es_ready), .es_flush(es_flush), .es_end(1'b0),
     .es_mark(es_mark), .es_pts(es_pts),
     .se_valid(se_valid), .se_ready(se_ready), .se_kind(se_kind), .se_aux(se_aux), .se_val(se_val),
     .sp_pps(sp_pps), .sp_sps(sp_sps), .sp_slice_type(sp_slice_type), .sp_field(sp_field), .sp_bottom(sp_bottom),

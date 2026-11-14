@@ -16,11 +16,14 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SVH = os.path.join(HERE, "..", "h264", "dec", "h264_fields.svh")
 
-# the SE word kinds of the top-level stream: 1..16 are mb_syntax's (tools/mb_syntax_golden.py)
+# the SE word kinds of the top-level stream: 1..16 and 20 (SE_T8, High) are mb_syntax's (tools/mb_syntax_golden.py)
 K_NAL = 17          # aux = nal_unit_type, val = nal_ref_idc
 K_HDR = 18          # aux = field id (below), val = the field's value (32-bit two's complement)
 K_EOS = 19          # end of stream (P5c): after the last NAL unit's words, once per flush;
                     # aux = 0, val = 0. In-band, so it cannot overtake the words before it.
+K_AUEND = 24        # (mm, roadmap P3e) the access unit's record ended: after its last NAL unit's
+                    # words, only on a LOW_LATENCY stream; aux = 0, val = 0. The reconstruction
+                    # closes the picture there instead of at the next picture's first slice.
 
 FIELDS = [
     # SPS
@@ -100,7 +103,8 @@ def render():
            "// RENDERED by tools/h264_fields.py --render; do not edit (the runner checks it).",
            "localparam [7:0] K_NAL_WORD = 8'd%d;" % K_NAL,
            "localparam [7:0] K_HDR_WORD = 8'd%d;" % K_HDR,
-           "localparam [7:0] K_EOS_WORD = 8'd%d;" % K_EOS]
+           "localparam [7:0] K_EOS_WORD = 8'd%d;" % K_EOS,
+           "localparam [7:0] K_AUEND_WORD = 8'd%d;" % K_AUEND]
     for name in FIELDS:
         out.append("localparam [7:0] %s = 8'd%d;" % (sv_name(name), FIELD_ID[name]))
     return "\n".join(out) + "\n"

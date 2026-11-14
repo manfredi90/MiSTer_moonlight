@@ -196,7 +196,7 @@ int main(int argc, char** argv) {
     std::string stem = argv[1], label = stem;
     Ddr ddr;
     uint64_t seed = 1;
-    bool prof = false, ring = false;
+    bool prof = false, ring = false, auend = false;
     uint32_t hold_max = 5000;
     std::vector<uint64_t> h_ms(256, 0), h_in(256, 0), h_ik(256, 0), h_es(256, 0), h_rs(256, 0), h_as(256, 0), h_fe(256, 0), h_d8(256, 0), h_ki(256, 0), h_kn(256, 0), h_m0(256, 0);
     // +prof, per picture (docs/mb_pipeline.md S4i: the imbalance between the stages is per
@@ -222,6 +222,7 @@ int main(int argc, char** argv) {
         else if (auto v = val("+clk_khz=")) { g_clk_khz = (unsigned)atoi(v); T_CLK = (1000000000ull + g_clk_khz / 2) / g_clk_khz; }
         else if (a == "+prof") prof = true;
         else if (a == "+ring") ring = true;
+        else if (a == "+auend") auend = true;      // (mm, P3e) with +ring: each record closes its picture
     }
     rng_s ^= seed * 0x9E3779B97F4A7C15ull;
     if (!rng_s) rng_s = 1;
@@ -264,7 +265,7 @@ int main(int argc, char** argv) {
     // ---- the model --------------------------------------------------------------------
     VerilatedContext* ctx = new VerilatedContext;
     Vcosim_top* d = new Vcosim_top{ctx};
-    d->clk = 0; d->mclk = 0; d->rst_n = 0; d->mrst_n = 0; d->ring_mode = ring;
+    d->clk = 0; d->mclk = 0; d->rst_n = 0; d->mrst_n = 0; d->ring_mode = ring; d->auend_en = auend;
     d->es_valid = 0; d->es_byte = 0; d->es_flush = 0; d->disp_hold = 0;
     d->ddr_waitrequest = 1; d->ddr_readdatavalid = 0; d->ddr_readdata = 0;
     d->eval();
@@ -277,6 +278,7 @@ int main(int argc, char** argv) {
     uint64_t wr_issued = 0, cycles = 0, since = 0, first_mb_cycle = 0, last_mb_cycle = 0;
     uint32_t hold = 0;                               // stores held for scoring
     uint32_t dhold = 0;                              // stores the display holds (emitted, not released)
+    uint32_t scored = 0;                             // scored stores whose scoring hold is not yet dropped
     uint64_t rel_at[32] = {0};
     std::vector<int> store_of;                       // each picture's store (pic_done k is picture k)
     long first_pic_of[32];
@@ -367,6 +369,8 @@ int main(int argc, char** argv) {
                     fail("out", fmt("store %d emitted beyond the model's %zu", s, outs.size()));
                 const Out& o = outs[n_emit];
                 long step = cur_pic + 1;
+                // (P3e, +auend) a picture's output step runs when its record ends instead of when the
+                // next picture opens: still before that opening, so the step is the model's either way
                 if (first_pic_of[s] != o.pic || step != o.step || d->emit_frame != o.frame || d->emit_unpaired != o.unpaired)
                     fail("out", fmt("emission %ld: picture %ld frame %d unpaired %d after %ld opened, want picture %ld "
                                     "frame %d unpaired %d after %ld", n_emit, first_pic_of[s], d->emit_frame,
@@ -378,8 +382,14 @@ int main(int argc, char** argv) {
             }
             if (d->eos_done) eos_seen++;
             if (d->pic_start) {
+                // (P3e, +auend) [auend] the record's end closed the previous picture: it is complete
+                // before this one opens (without it, its pic_done comes with this pic_start)
+                if (auend && cur_pic >= 0 && n_done != cur_pic + 1)
+                    fail("auend", fmt("picture %ld opens with %ld completed: the previous one was not closed at its record's end",
+                                      cur_pic + 1, n_done));
                 cur_pic++;
                 hold |= 1u << d->cur_store;
+                scored &= ~(1u << d->cur_store);
                 store_of.push_back(d->cur_store);
                 if (!d->pinfo_second) first_pic_of[d->cur_store] = cur_pic;
             }
@@ -459,8 +469,12 @@ int main(int argc, char** argv) {
                 Score s = pend.front();
                 pend.pop_front();
                 check_store(s.p, s.store, s.st);
-                if (d->cur_store != s.store) hold &= ~(1u << s.store);
+                scored |= 1u << s.store;
             }
+            // a scored store is released once it is no longer the current one (with +auend a picture
+            // completes before the next one opens: its store stays current until then)
+            hold &= ~(scored & ~(1u << d->cur_store));
+            scored &= 1u << d->cur_store;
             // the display: a store released when its time comes
             for (int i = 0; i < 20; i++)
                 if ((dhold & (1u << i)) && cycles >= rel_at[i]) dhold &= ~(1u << i);

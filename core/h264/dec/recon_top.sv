@@ -14,6 +14,10 @@
 // slice to be READY -- recon_dpb (a new picture: the previous one marked, a store, the
 // POC), recon_lists, recon_slice_tab -- before any macroblock word goes to the intake.
 //
+// (mm, roadmap P3e) K_AUEND_WORD -- the access unit's record ended (a LOW_LATENCY stream) -- is
+// consumed like the EOS word and closes the open picture in recon_dpb at once (pic_done then,
+// not at the next picture's start); the next NAL word waits until that close has started.
+//
 // A picture above 4,096 macroblocks (what a 2 MiB DPB store holds at 512 B a macroblock,
 // docs/h264_recon.md S2.2) is refused: its macroblock words are discarded, `ref_size`
 // counts it (word 20's rc_ref_size), nothing is written -- and (2026-10-02) recon_dpb never
@@ -232,6 +236,8 @@ module recon_top
     wire [NSTORE*5-1:0]  st_lt;
     wire        e_gap, e_no_store, e_window, e_mmco, e_mod;
     logic       dpb_eos;
+    logic       dpb_auend;                  // (P3e) a K_AUEND_WORD consumed (pulse)
+    wire        dpb_close_pend, dpb_closed;
     recon_dpb #(.STALL_LIMIT(STALL_LIMIT)) u_dpb (
         .clk(clk), .rst_n(rst_n), .clear(clear),
         .slice_ready(dpb_slice_ready), .sps(sps_w), .pps(pps_w), .sh_first_mb(sh_first_mb), .sh_slice_type(sh_slice_type),
@@ -246,7 +252,8 @@ module recon_top
         .cur_poc(cur_poc), .lists_go(lists_go), .lists_done(lists_done), .slice_go(slice_go), .busy(dpb_busy),
         .st_ref_t(st_ref_t), .st_ref_b(st_ref_b), .st_dec_t(st_dec_t), .st_dec_b(st_dec_b), .st_lt(st_lt), .st_frame(st_frame), .st_busy(st_busy),
         .tab_ra_lists(tab_ra_lists), .tab_ra_slice(tab_ra_slice), .tab_q_poc_t(tab_q_poc_t), .tab_q_poc_b(tab_q_poc_b), .tab_q_fnw(tab_q_fnw),
-        .eos(dpb_eos), .eos_done(eos_done), .emit_valid(emit_valid), .emit_store(emit_store),
+        .eos(dpb_eos), .au_end(dpb_auend), .close_pend(dpb_close_pend), .pic_closed(dpb_closed),
+        .eos_done(eos_done), .emit_valid(emit_valid), .emit_store(emit_store),
         .emit_unpaired(emit_unpaired), .emit_first_bot(emit_first_bot), .emit_frame(emit_frame),
         .emit_dec_t(emit_dec_t), .emit_dec_b(emit_dec_b), .emit_poc_t(emit_poc_t), .emit_poc_b(emit_poc_b),
         .out_dropped(out_dropped), .out_direct(out_direct), .out_over(out_over), .nrf_late(nrf_late), .stall_cycles(stall_cycles),
@@ -422,6 +429,7 @@ module recon_top
     logic    in_slice_hdr;                 // header words of a slice seen, its first MB not yet
     logic    refuse_pic;
     logic    had_pic;
+    logic    done_sent;                    // (P3e) the open picture's pic_done already went out (closed by au_end)
     // recon_mb counts its own errors (1 a reference index naming no list entry / a
     // temporal co-located reference outside list 0 -- mv_pred; 2 a list entry with no
     // picture -- recon_inter): a change of its count is one more error here (11 / 12)
@@ -441,9 +449,10 @@ module recon_top
                     // held until the pipeline is idle (R_NAL_WAIT), then taken below
                 end else if (w_kind == K_HDR_WORD) begin
                     h_valid = 1'b1; sf_rd = 1'b1;
-                end else if (w_kind == K_EOS_WORD) begin
+                end else if (w_kind == K_EOS_WORD || w_kind == K_AUEND_WORD) begin
                     // end of stream: never a macroblock word -- recon_dpb closes the last
-                    // picture and emits everything waiting (P5d)
+                    // picture and emits everything waiting (P5d); the access unit's end
+                    // (P3e): recon_dpb closes the open picture
                     sf_rd = 1'b1;
                 end else if (w_kind == 8'd1 && in_slice_hdr) begin
                     // the first macroblock of a slice: its header is complete (hdr_end)
@@ -451,7 +460,7 @@ module recon_top
                     in_valid = 1'b1; sf_rd = in_ready;
                 end
             end
-            R_NAL_WAIT: if (sf_valid && idle3 && !dpb_busy) begin h_valid = 1'b1; sf_rd = 1'b1; end
+            R_NAL_WAIT: if (sf_valid && idle3 && !dpb_busy && !dpb_auend && !dpb_close_pend) begin h_valid = 1'b1; sf_rd = 1'b1; end
             R_DISCARD: if (sf_valid && !(w_kind == K_NAL_WORD)) sf_rd = 1'b1;   // (an EOS too: below)
             default: ;
         endcase
@@ -462,7 +471,7 @@ module recon_top
             rs <= R_RUN; in_slice_hdr <= 1'b0; hdr_end <= 1'b0; tab_go <= 1'b0; mb_slice_go <= 1'b0;
             refuse_pic <= 1'b0; plane_mbs <= '0; sr_d1 <= 1'b0; sr_d2 <= 1'b0; sr_d3 <= 1'b0; sz_w <= '0; sz_h <= '0; sz_over <= 1'b0; sz_prod <= '0; pic_count <= '0; err_count <= '0; err_code <= '0; ref_size <= '0;
             pic_start <= 1'b0; cur_store <= '0; cur_struct <= '0; pic_done <= 1'b0; done_store <= '0; done_struct <= '0;
-            width_mbs <= '0; frame_height_mbs <= '0; aspect_idc <= '0; sar_w <= '0; sar_h <= '0; had_pic <= 1'b0; idle <= 1'b1; m_err_q <= '0; idle_run <= '0;
+            width_mbs <= '0; frame_height_mbs <= '0; aspect_idc <= '0; sar_w <= '0; sar_h <= '0; had_pic <= 1'b0; done_sent <= 1'b0; dpb_auend <= 1'b0; idle <= 1'b1; m_err_q <= '0; idle_run <= '0;
             dpb_eos <= 1'b0; pinfo_we <= 1'b0; pinfo_store <= '0; pinfo_second <= 1'b0; pinfo_w_mbs <= '0; pinfo_hf_mbs <= '0; pinfo_aspect <= '0;
             pinfo_crop <= '0; pinfo_timing_v <= 1'b0; pinfo_nuit <= '0; pinfo_ts <= '0; pinfo_ps <= '0; pinfo_ps_v <= 1'b0;
             pinfo_pts <= '0; pinfo_pts_v <= 1'b0; pinfo_idr <= 1'b0;
@@ -470,6 +479,7 @@ module recon_top
         end else begin
             // P5d: an end-of-stream word consumed -> recon_dpb closes and flushes
             dpb_eos <= sf_rd && sf_valid && (w_kind == K_EOS_WORD);
+            dpb_auend <= sf_rd && sf_valid && (w_kind == K_AUEND_WORD);
             sr_d1 <= slice_ready; sr_d2 <= sr_d1; sr_d3 <= sr_d2;
             sz_w <= w_mbs; sz_h <= hf_mbs;
             sz_prod <= {13'd0, sz_w} * {13'd0, sz_h};
@@ -492,8 +502,8 @@ module recon_top
             if (d_pic_start) begin
                 // the previous picture is complete: every one of its writes was issued before
                 // recon_dpb could open this one (pipe_idle)
-                if (had_pic) begin pic_done <= 1'b1; done_store <= cur_store; done_struct <= cur_struct; end
-                had_pic <= 1'b1;
+                if (had_pic && !done_sent) begin pic_done <= 1'b1; done_store <= cur_store; done_struct <= cur_struct; end
+                had_pic <= 1'b1; done_sent <= 1'b0;
                 pic_start <= 1'b1; cur_store <= d_store; cur_struct <= d_struct; pic_count <= pic_count + 1'b1;
                 // P5d: the picture's display facts, by store (its second field: the "b" half)
                 pinfo_we <= 1'b1; pinfo_store <= d_store;
@@ -509,10 +519,15 @@ module recon_top
             end
             // P5d: the end of stream closed the last picture: it is complete too
             if (eos_done && had_pic) begin
-                pic_done <= 1'b1; done_store <= cur_store; done_struct <= cur_struct; had_pic <= 1'b0;
+                if (!done_sent) begin pic_done <= 1'b1; done_store <= cur_store; done_struct <= cur_struct; end
+                had_pic <= 1'b0; done_sent <= 1'b0;
+            end
+            // (P3e) the access unit's end closed the open picture: it is complete now
+            if (dpb_closed && had_pic && !done_sent) begin
+                pic_done <= 1'b1; done_store <= cur_store; done_struct <= cur_struct; done_sent <= 1'b1;
             end
             if (clear) begin
-                rs <= R_RUN; in_slice_hdr <= 1'b0; had_pic <= 1'b0;
+                rs <= R_RUN; in_slice_hdr <= 1'b0; had_pic <= 1'b0; done_sent <= 1'b0;
             end else case (rs)
                 R_RUN: if (sf_valid) begin
                     if (w_kind == K_NAL_WORD) rs <= R_NAL_WAIT;
@@ -524,7 +539,7 @@ module recon_top
                         rs <= R_SLICE_WAIT;
                     end
                 end
-                R_NAL_WAIT: if (sf_valid && idle3 && !dpb_busy) begin
+                R_NAL_WAIT: if (sf_valid && idle3 && !dpb_busy && !dpb_auend && !dpb_close_pend) begin
                     in_slice_hdr <= (w_aux[4:0] == 5'd1 || w_aux[4:0] == 5'd5);
                     rs <= R_RUN;
                 end

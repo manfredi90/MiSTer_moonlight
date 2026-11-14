@@ -3,6 +3,7 @@
 localparam [7:0] K_NAL_WORD = 8'd17;
 localparam [7:0] K_HDR_WORD = 8'd18;
 localparam [7:0] K_EOS_WORD = 8'd19;
+localparam [7:0] K_AUEND_WORD = 8'd24;
 localparam [7:0] F_profile_idc = 8'd1;
 localparam [7:0] F_constraint_set0_flag = 8'd2;
 localparam [7:0] F_constraint_set1_flag = 8'd3;

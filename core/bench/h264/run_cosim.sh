@@ -307,6 +307,10 @@ else
     one $W/x264_film.264 x264_film >> $W/green.tsv &
     one $W/x264_sun.264 x264_sun >> $W/green.tsv &
     one $W/x264_sun.264 x264_sun_ring +ring >> $W/green.tsv &
+    # (mm, P3e) the record's end closes the picture (emu: a LOW_LATENCY stream): the Sunshine-shaped
+    # window and the film one (B pyramid: early output with reordering) through the ring
+    one $W/x264_sun.264 x264_sun_auend "+ring +auend" >> $W/green.tsv &
+    one $W/x264_film.264 x264_film_auend "+ring +auend" >> $W/green.tsv &
     # (fj#20) CAVLC through the interface: the ring fed x264 ultrafast's CAVLC, the library's write
     # call rewrites it, the decoder must match the golden made from cavlc2cabac's rewrite
     if make_cavlc; then one $W/x264_uf.cabac.264 x264_uf_ring +ring $W/x264_uf.264 >> $W/green.tsv &

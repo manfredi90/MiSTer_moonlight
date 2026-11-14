@@ -53,6 +53,13 @@
 // its own limit would output a POC below one already output: counted (nrf_late). A stock
 // Sunshine stream (max_num_reorder_frames 0, max_dec_frame_buffering 2) was held two
 // pictures by the bumping alone.
+// THE ACCESS UNIT'S END (mm, roadmap P3e; the front end's K_AUEND_WORD, a LOW_LATENCY stream):
+// au_end closes the open picture at once -- the same sequence the next picture's first slice
+// (or the end of stream) runs: wait for the pipeline, MARK, the output step, D_POST_MARK -- and
+// returns to D_IDLE with no picture open (pic_closed). The next slice then opens its picture
+// with nothing to close (pic_open low: D_WAIT_IDLE -> D_POST_MARK -> D_OPEN). Early output
+// thus emits a Sunshine picture when its record ends, not a frame later. close_pend is high
+// from the pulse until the close has started (busy): recon_top holds the next NAL word on it.
 // DEADLOCK: a picture's output step runs before the NEXT picture opens its store, so
 // references + waiting <= the DPB size (<= 16) when a store is chosen; with 20 stores at
 // least one is free unless the DISPLAY holds some -- then D_OPEN waits (stall_cycles
@@ -138,6 +145,9 @@ module recon_dpb
 
     // the output process (P5d): one pulse per store emitted to the display's queue
     input  wire         eos,               // end of stream (pulse): close, then emit everything
+    input  wire         au_end,            // (P3e) the access unit ended (pulse): close the open picture
+    output logic        close_pend,        // (P3e) au_end seen, the close not yet started
+    output logic        pic_closed,        // (P3e) pulse: the open picture was closed by au_end
     output logic        eos_done,          // pulse: the end-of-stream flush is complete
     output logic        emit_valid,
     output logic [4:0]  emit_store,
@@ -376,6 +386,8 @@ module recon_dpb
     localparam [2:0] OM_FLUSH = 3'd0, OM_REF = 3'd1, OM_NONREF = 3'd2, OM_EOS = 3'd3, OM_NRF = 3'd4;
     logic [2:0]  om;                       // what the scan is for
     logic        eos_pend, eos_mode;
+    logic        auend_pend, close_mode;   // (P3e)
+    assign close_pend = auend_pend;
     logic        cur_no_output;
     logic [4:0]  cur_dpb_sz;               // the closing picture's DPB size
     logic [4:0]  cur_nrf;                  // its max_num_reorder_frames (E.2.1), when cur_nrf_on
@@ -519,6 +531,7 @@ module recon_dpb
             pt_we <= 1'b0; pb_we <= 1'b0; fw_we <= 1'b0; fn_we <= 1'b0; pt_wa <= '0; pb_wa <= '0; fw_wa <= '0; fn_wa <= '0;
             pt_wd <= '0; pb_wd <= '0; fw_wd <= '0; fn_wd <= '0;
             waiting <= '0; emitted <= '0; pend_emit <= '0; om <= OM_FLUSH; eos_pend <= 1'b0; eos_mode <= 1'b0;
+            auend_pend <= 1'b0; close_mode <= 1'b0; pic_closed <= 1'b0;
             cur_no_output <= 1'b0; cur_dpb_sz <= 5'd16; best_found <= 1'b0; act_bump <= 1'b0; act_late <= 1'b0; best_store <= '0; best_poc <= '0;
             best_pt <= '0; best_pb <= '0; stall_ctr <= '0; sz_acc <= '0; sz_pic <= '0; sz_cnt <= '0; sz_run <= 1'b0;
             emit_valid <= 1'b0; emit_store <= '0; emit_unpaired <= 1'b0; emit_first_bot <= 1'b0; emit_frame <= 1'b0;
@@ -531,6 +544,8 @@ module recon_dpb
             pt_we <= 1'b0; pb_we <= 1'b0; fw_we <= 1'b0; fn_we <= 1'b0;
             emit_valid <= 1'b0; eos_done <= 1'b0;
             if (eos) eos_pend <= 1'b1;
+            if (au_end) auend_pend <= 1'b1;
+            pic_closed <= 1'b0;
             drop_go <= 1'b0;
             if (drop_go) out_dropped <= out_dropped + {26'd0, drop_n};
             // the DPB size engine (P5d)
@@ -548,9 +563,14 @@ module recon_dpb
                 end
                 pic_open <= 1'b0; ds <= D_IDLE; busy <= 1'b0;
                 waiting <= '0; emitted <= '0; pend_emit <= '0; eos_pend <= 1'b0; eos_mode <= 1'b0;
+                auend_pend <= 1'b0; close_mode <= 1'b0;
                 prev_ref_fn <= '0; prev_fn <= '0; prev_mmco5 <= 1'b0; prev_ref_mmco5 <= 1'b0; prev_was_field <= 1'b0;
             end else case (ds)
-                D_IDLE: if (slice_ready) begin
+                D_IDLE: if (auend_pend) begin
+                    // (P3e) the access unit ended: close the open picture now (nothing open: nothing to do)
+                    auend_pend <= 1'b0;
+                    if (pic_open) begin busy <= 1'b1; close_mode <= 1'b1; ds <= D_WAIT_IDLE; end
+                end else if (slice_ready) begin
                     busy <= 1'b1;
                     pic_new <= new_pic;
                     if (new_pic) ds <= D_WAIT_IDLE; else ds <= D_FNW;
@@ -864,7 +884,10 @@ module recon_dpb
                         mmco5_r[cur_store] <= cur_mmco5;
                     end
                     pic_open <= 1'b0;
-                    if (eos_mode) ds <= D_EOS; else ds <= D_OPEN;
+                    if (eos_mode) ds <= D_EOS;
+                    else if (close_mode) begin
+                        close_mode <= 1'b0; busy <= 1'b0; pic_closed <= 1'b1; ds <= D_IDLE;   // (P3e)
+                    end else ds <= D_OPEN;
                 end
                 // ---- open the new picture ---------------------------------------------
                 // (two cycles, P5b: D_OPEN decides -- the pairing, the gap, the store -- and

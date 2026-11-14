@@ -27,6 +27,7 @@ module cosim_top (
     input  wire         rst_n,
     input  wire         mrst_n,
     input  wire         ring_mode,        // P3h: the ES from the ring (static)
+    input  wire         auend_en,         // (mm, P3e) the record's last byte closes the access unit (static)
     output wire   [7:0] ring_state,
     output wire   [7:0] ring_err,
     output wire  [31:0] ring_polls,
@@ -206,6 +207,9 @@ module cosim_top (
     wire        fe_valid = ring_mode ? rr_valid : es_valid;
     wire        fe_ready;
     wire        fe_flush = ring_mode ? (rr_eos && !eos_q) : es_flush;
+    // (mm, P3e) +auend: the record's last byte closes the access unit, as emu does on a
+    // LOW_LATENCY stream (here on any ring stream, so a paced fixture exercises it too)
+    wire        fe_end = ring_mode && auend_en && rr_au_end;
     // ready only once the front end is out of its (synchronised) reset: nal_parser's
     // in_ready reads 1 in reset, and a byte taken then is lost -- a stream opening with a
     // 3-byte start code lost its SPS that way (Phase 5). emu cannot: its CDC FIFO in front
@@ -238,7 +242,7 @@ module cosim_top (
 
     h264_top u_fe (
         .clk(clk), .rst_n(dec_rst_n), .clear(1'b0),
-        .es_byte(fe_byte), .es_valid(fe_valid), .es_ready(fe_ready), .es_flush(fe_flush),
+        .es_byte(fe_byte), .es_valid(fe_valid), .es_ready(fe_ready), .es_flush(fe_flush), .es_end(fe_end),
         .es_mark(ring_mode & rr_mark), .es_pts(ring_mode ? rr_pts : 33'd0),   // ring mode: the records' PTS
         .se_valid(se_valid), .se_ready(se_ready), .se_kind(se_kind), .se_aux(se_aux), .se_val(se_val),
         .sp_pps(), .sp_sps(), .sp_slice_type(), .sp_field(), .sp_bottom(), .sp_idr(),

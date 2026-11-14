@@ -39,6 +39,11 @@
 //     bytes, marks and PTSs, never a pack or a CLPI.
 //   * End of stream: after es_flush has drained through nal_parser and the last NAL
 //     unit is done, one K_EOS_WORD -- in band, so it cannot overtake the words before.
+//   * (mm, roadmap P3e) The access unit's end: es_end marks the last byte of a ring record
+//     (emu drives it only on a LOW_LATENCY stream). nal_parser closes the NAL unit at that
+//     byte; once it has been consumed and its unit is done, one K_AUEND_WORD, in band like
+//     the EOS: the reconstruction closes the picture there (not at the next picture's
+//     first slice, one frame later).
 //
 // The rbsp_reader fetches only on demand, so when the slice header ends (byte
 // aligned) nothing of the slice data is buffered anywhere but the nal_parser's
@@ -60,6 +65,7 @@ module h264_top
     input  wire        es_valid,
     output logic       es_ready,
     input  wire        es_flush,           // end of stream: release the last NAL unit
+    input  wire        es_end,             // (P3e) with es_byte: the access unit's last byte
     input  wire        es_mark,            // with es_byte: the first payload byte of a PES with a PTS
     input  wire [32:0] es_pts,             //   and that PTS (meaningful with es_mark)
 
@@ -108,7 +114,7 @@ module h264_top
 
     typedef enum logic [4:0] {T_IDLE, T_NAL_EMIT, T_DISPATCH, T_PS, T_SH, T_SL, T_FLUSH, T_FLUSH_WAIT,
                               T_INIT, T_INIT_WAIT, T_MBS_START, T_MBS, T_DRAIN,
-                              T_SEI, T_PT_AU, T_PT_WAIT, T_PT_SEI, T_PT_LO, T_PT_HI, T_PT_END, T_EOS} state_t;
+                              T_SEI, T_PT_AU, T_PT_WAIT, T_PT_SEI, T_PT_LO, T_PT_HI, T_PT_END, T_EOS, T_AUEND} state_t;
     state_t     state;
     logic [4:0] nal_type;
     logic [1:0] nal_ref_idc;
@@ -123,16 +129,18 @@ module h264_top
     logic       au_go;                     // pulse: an access unit starts at au_at
     logic [23:0] au_at;
     logic       eos_pend;
+    logic       auend_seen;                // (P3e) an access unit's last byte was consumed
 
     // ---- nal_parser ----------------------------------------------------------------
     logic [7:0] nb_byte;
-    logic       nb_valid, nb_ready, nb_first, nb_last;
+    logic       nb_valid, nb_ready, nb_first, nb_last, nb_end;
     logic [23:0] np_in_pos, np_sc_pos;
     logic       np_flushed;
     nal_parser #(.PW(24)) np (
         .clk(clk), .rst_n(rst_n),
-        .in_byte(es_byte), .in_valid(es_valid), .in_ready(es_ready), .in_flush(es_flush),
+        .in_byte(es_byte), .in_valid(es_valid), .in_ready(es_ready), .in_flush(es_flush), .in_end(es_end),
         .out_byte(nb_byte), .out_valid(nb_valid), .out_ready(nb_ready), .out_first(nb_first), .out_last(nb_last),
+        .out_end(nb_end),
         .in_pos(np_in_pos), .out_sc_pos(np_sc_pos), .flushed(np_flushed));
 
     // ---- the PTS stamps (P5c) --------------------------------------------------------------
@@ -284,7 +292,8 @@ module h264_top
     always_comb begin
         nb_ready = 1'b0;
         case (state)
-            T_IDLE:  nb_ready = 1'b1;                       // the header byte, or stray bytes
+            T_IDLE:  nb_ready = !auend_seen;                // the header byte, or stray bytes (not
+                                                            // before the AU's end word, P3e)
             T_DRAIN: nb_ready = !nb_first && !nal_ended;
             default: begin
                 if (route_rd)       nb_ready = rd_in_ready && !nb_first;
@@ -307,6 +316,7 @@ module h264_top
             T_PT_LO:  begin se_valid = 1'b1; se_kind = K_HDR_WORD; se_aux = F_au_pts_lo; se_val = tag_pts[31:0]; end
             T_PT_HI:  begin se_valid = 1'b1; se_kind = K_HDR_WORD; se_aux = F_au_pts_hi; se_val = {31'd0, tag_pts[32]}; end
             T_EOS:    begin se_valid = 1'b1; se_kind = K_EOS_WORD; se_aux = 8'd0; se_val = 32'd0; end
+            T_AUEND:  begin se_valid = 1'b1; se_kind = K_AUEND_WORD; se_aux = 8'd0; se_val = 32'd0; end
             default: ;
         endcase
     end
@@ -315,7 +325,7 @@ module h264_top
     assign rd_req_kind  = sh_active ? sh_rd_req_kind  : ps_rd_req_kind;
     assign rd_req_n     = sh_active ? sh_rd_req_n     : ps_rd_req_n;
 
-    assign busy = (state != T_IDLE) || nb_valid || eos_pend;
+    assign busy = (state != T_IDLE) || nb_valid || eos_pend || auend_seen;
 
     wire is_slice   = (nal_type == 5'd1) || (nal_type == 5'd5);
     wire is_ps      = (nal_type == 5'd7) || (nal_type == 5'd8);
@@ -331,7 +341,7 @@ module h264_top
         if (!rst_n) begin
             state <= T_IDLE; nal_type <= 5'd0; nal_ref_idc <= 2'd0; nal_ended <= 1'b0; sh_active <= 1'b0;
             route_rd <= 1'b0; route_eng <= 1'b0; route_sei <= 1'b0; rd_flush <= 1'b0;
-            vcl_last <= 1'b1; prev_vcl <= 1'b1; nal_sc <= '0; au_go <= 1'b0; au_at <= '0; eos_pend <= 1'b0;
+            vcl_last <= 1'b1; prev_vcl <= 1'b1; nal_sc <= '0; au_go <= 1'b0; au_at <= '0; eos_pend <= 1'b0; auend_seen <= 1'b0;
             sei_start <= 1'b0; sei_drop <= 1'b0; pt_go <= 1'b0;
             pt_seen_count <= '0; pt_missing_count <= '0; pt_bad_count <= '0; sei_err_count <= '0; pts_tag_count <= '0;
             ps_start <= 1'b0; sh_start <= 1'b0; mbs_start <= 1'b0; mbs_owns <= 1'b0; ps_sl_start <= 1'b0;
@@ -342,6 +352,7 @@ module h264_top
             ps_start <= 1'b0; sh_start <= 1'b0; mbs_start <= 1'b0; rd_flush <= 1'b0; ps_sl_start <= 1'b0;
             sei_start <= 1'b0; sei_drop <= 1'b0; pt_go <= 1'b0; au_go <= 1'b0;
             if (nb_take && nb_last) nal_ended <= 1'b1;
+            if (nb_take && nb_last && nb_end) auend_seen <= 1'b1;
             if (np_flushed) eos_pend <= 1'b1;
             if (sei_err_walk) sei_err_count <= sei_err_count + 32'd1;
             if (sei_pt_short || sei_pt_struct) pt_bad_count <= pt_bad_count + 32'd1;
@@ -352,7 +363,8 @@ module h264_top
             end
 
             case (state)
-            T_IDLE: if (eos_pend && !nb_valid && !np_flushed) state <= T_EOS;
+            T_IDLE: if (auend_seen) state <= T_AUEND;
+            else if (eos_pend && !nb_valid && !np_flushed) state <= T_EOS;
             else if (nb_take && nb_first) begin
                 nal_type <= nb_byte[4:0]; nal_ref_idc <= nb_byte[6:5];
                 nal_ended <= nb_last;
@@ -370,6 +382,7 @@ module h264_top
             end
             T_NAL_EMIT: if (se_ready) state <= T_DISPATCH;
             T_EOS: if (se_ready) begin eos_pend <= 1'b0; state <= T_IDLE; end
+            T_AUEND: if (se_ready) begin auend_seen <= 1'b0; state <= T_IDLE; end
             T_DISPATCH: begin
                 if (nal_ended) begin
                     // nothing after the header byte: a parameter set or slice cannot be empty

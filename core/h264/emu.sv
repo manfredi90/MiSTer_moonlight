@@ -555,14 +555,15 @@ cdc_reset fe_rst_cdc (
 	.rst_n_out (fe_rst_dec_n)
 );
 
-// The bytes into clk_dec. es_au_end is carried by the reader but not yet by this crossing
-// (roadmap P3e brings the sideband and the decoder's early close).
-wire [41:0] es_data;                      // {pts[32:0], mark, byte}
+// The bytes into clk_dec, with (mm, roadmap P3e) the reader's es_au_end -- the record's last
+// byte -- on a LOW_LATENCY stream: the decoder closes the picture there, not when the next
+// access unit's first slice arrives (one frame of latency less for a game stream).
+wire [42:0] es_data;                      // {au_end, pts[32:0], mark, byte}
 wire        es_valid, es_ready, es_flush, fe_flushed;
-vidfeed_cdc #(.DW(42)) vidfeed_cdc_inst (
+vidfeed_cdc #(.DW(43)) vidfeed_cdc_inst (
 	.wr_clk     (clk_sys),
 	.wr_rst_n   (fe_rst_n),
-	.wr_data    ({rr_pts, rr_mark, rr_byte}),
+	.wr_data    ({rr_au_end & rr_ll, rr_pts, rr_mark, rr_byte}),
 	.wr_valid   (rr_valid),
 	.wr_ready   (rr_ready),
 	.wr_flush   (rr_eos),                 // END_OF_STREAM consumed: every byte was handed over before it
@@ -596,6 +597,7 @@ h264_top h264_top_inst (
 	.es_valid      (es_valid),
 	.es_ready      (es_ready),
 	.es_flush      (es_flush),
+	.es_end        (es_data[42]),
 	.es_mark       (es_data[8]),
 	.es_pts        (es_data[41:9]),
 	.se_valid      (se_valid),
