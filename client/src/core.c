@@ -426,7 +426,7 @@ static struct {
   /* la stima della frequenza del PC all'avvio del genlock (FLL) */
   bool fll_done;
   /* il ritmo del PC (timestamp RTP) per il genlock */
-  bool rtp_have, q_init, gl_locked, d_have;
+  bool rtp_have, q_init, gl_locked, d_have, gl_relock, p240;
   uint32_t rtp_last;
   int64_t rtp64;
   double d_ref, dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv;
@@ -495,7 +495,7 @@ static void *guard_thread(void *arg) {
         double k = floor((s - g.t_ref) / Pe + 0.5);
         double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
-          if (++g.outliers > 30) g.samples = 0, g.outliers = 0;   /* persa: da capo */
+          if (++g.outliers > 30) g.samples = 0, g.outliers = 0, g.gl_relock = true;   /* persa: da capo */
         } else {
           g.outliers = 0;
           g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
@@ -537,6 +537,17 @@ static void *guard_thread(void *arg) {
         g.have_snap = true;
         /* il genlock: il core lo applica? (parola 45: [24] GL_EN applicato, [1] parola 34 rifiutata) */
         g.w45 = st.w[45];
+        /* 480i <-> 240p dall'OSD: la presa cade altrove nel quadro e il raster riparte con un'altra
+         * fase; il genlock agganciato (correzione limitata) ci metterebbe 20 s: si riaggancia */
+        if ((st.w[1] & 0xFFFFu) >= 0x103u) {
+          bool p240n = ((st.w[87] >> 4) & 1u) && ((st.w[87] >> 13) & 1u);
+          if (p240n != g.p240) {
+            g.p240 = p240n;
+            g.eoff = g.P * (p240n ? 425947.0 : 428142.0) / 450000.0;
+            g.gl_relock = true;
+            printf("[genlock] raster %s: si riaggancia\n", p240n ? "240p" : "480i");
+          }
+        }
         /* il genlock attivo ma il PLL del core non letto dopo 4 s: non può muoversi, si torna alla guardia */
         if (g.gl_state == 2 && !((g.w45 >> 25) & 1) && s - g.gl_t0 > 4000000 && !g.gl_pll_fail) {
           g.gl_pll_fail = true;
@@ -602,7 +613,8 @@ static void guard_start(void) {
   g.fll_done = false;
   g.fll_start = g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
   g.fll_n = 0;
-  g.rtp_have = g.q_init = g.gl_locked = g.d_have = false;
+  g.rtp_have = g.q_init = g.gl_locked = g.d_have = g.gl_relock = false;
+  g.p240 = ci.p240;
   g.d_ref = g.dmin = g.dmin_t = g.q = g.q_tgt = g.gl_bad_t0 = g.gl_phv = 0;
   g.xh_i = g.xh_n = g.xh_cnt = g.gl_good = 0;
   gl_problem[0] = 0;
@@ -764,6 +776,10 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
     tg = g_wrap(tg, P);
     double e = g_wrap(phv - tg + P / 2, P) - P / 2;
     double pc = e / 150.0;
+    if (g.gl_relock) {
+      g.gl_relock = false;
+      if (g.gl_locked) { g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0; }
+    }
     if (g.gl_locked) {
       g.gl_integ += e * 1e-6;
       if (pc > 3) pc = 3;
