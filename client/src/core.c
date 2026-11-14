@@ -390,6 +390,7 @@ static struct {
   double Pm;                       /* il periodo dei quadri misurato (col genlock cambia), us */
   uint64_t w45;                    /* l'ultima parola 45: [25] PLL letto, [26] in movimento, [63:32] K */
   bool gl_pll_fail;                /* il core non ha letto il suo PLL: il genlock è inutile, resta la guardia */
+  double gl_stuck_t0;              /* da quando il core è fermo su una scrittura al PLL (0: non lo è) */
   unsigned samples, outliers;
   /* il blocco di stato all'ultimo quadro */
   uint32_t pick, starve;
@@ -525,6 +526,18 @@ static void *guard_thread(void *arg) {
           printf("[genlock] il core non ha letto il suo PLL video (stato %u, letture 0x%08x): resta la guardia\n",
                  (unsigned)(g.w45 >> 27) & 15u, (unsigned)(g.w45 >> 32));
         }
+        /* ... o letto, ma ogni scrittura resta in attesa (waitrequest alto) per 3 s: il PLL non risponde */
+        unsigned pst = (unsigned)(g.w45 >> 27) & 15u;
+        if (g.gl_state == 2 && (pst == 8 || pst == 9) && ((g.w45 >> 31) & 1)) {
+          if (!g.gl_stuck_t0) g.gl_stuck_t0 = s;
+          else if (s - g.gl_stuck_t0 > 3000000 && !g.gl_pll_fail) {
+            g.gl_pll_fail = true;
+            g.gl_state = 3;
+            printf("[genlock] il PLL video del core non accetta le scritture (stato %u, waitrequest alto): resta la guardia\n", pst);
+          }
+        } else {
+          g.gl_stuck_t0 = 0;
+        }
         if (g.gl_state == 1) {
           uint64_t w45 = st.w[45];
           if ((w45 >> 24) & 1) {
@@ -566,6 +579,7 @@ static void guard_start(void) {
   g.gl_state = genlock_req ? 1 : 0;
   g.gl_t0 = (double)now_us();
   g.gl_pll_fail = false;
+  g.gl_stuck_t0 = 0;
   g.gl_trim = g.gl_trim_sent = 0;
   g.gl_integ = 0;
   g.gl_L = g.P / ((ci.interlaced || ci.p240) ? 262.5 : 525.0);
