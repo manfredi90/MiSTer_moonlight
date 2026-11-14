@@ -31,6 +31,7 @@
 #include <opus_multistream.h>
 
 #include <errno.h>
+#include <math.h>
 #include <stdint.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -110,6 +111,8 @@ static uint32_t pace_written, pace_base;   /* scritte dall'inizio dello stream; 
 
 void mg_core_set_ritmo(bool on) { rt.on = on; }
 void mg_core_set_pacing(bool on) { pacing = on; }
+static bool guard_on;
+void mg_core_set_guard(bool on) { guard_on = on; }
 
 static uint64_t now_us(void) {
   struct timespec ts;
@@ -277,6 +280,7 @@ void mg_core_tick(void) {
   }
 }
 
+static void guard_report(void);
 static void ritmo_au(PDECODE_UNIT du, uint64_t held_us, bool forced) {
   if (!rt.on || !rt.t0_ms)
     return;
@@ -301,9 +305,10 @@ static void ritmo_au(PDECODE_UNIT du, uint64_t held_us, bool forced) {
     printf("[ritmo] %7.1f s: %u immagini, il PC a %.3f fps, arrivo +-%.1f ms; passo %s: %u trattenute "
            "(media %.1f ms, max %.1f), %u scritte con una piu' nuova dietro, %u perse; "
            "core: %u prese, %u scartate, %u ripetute\n",
-           t, rt.frames, fps, (rt.jit_max - rt.jit_min) / 2000.0, pacing ? "attivo" : "spento", rt.held,
+           t, rt.frames, fps, (rt.jit_max - rt.jit_min) / 2000.0, guard_on ? "guardia" : pacing ? "attivo" : "spento", rt.held,
            rt.held ? rt.held_us_sum / 1000.0 / rt.held : 0.0, rt.held_us_max / 1000.0, rt.forced, rt.lost,
            rt.picks, rt.skips, rt.starves);
+    guard_report();
     ritmo_reset_window();
   }
 }
@@ -345,6 +350,278 @@ static void pace_wait(uint64_t *held_us, bool *forced) {
   *held_us = now_us() - t0;
   if (*held_us < 500)
     *held_us = 0;
+}
+
+/* ---------- la guardia di fase (-guard; core con la P3e) ----------
+ * Col PC a 60,000 Hz esatti gli arrivi restano a lungo nella stessa posizione rispetto alla presa del
+ * core: lontani da essa, tutto liscio; vicini, ogni ritardo di rete di qualche ms fa cadere
+ * un'immagine ora in un quadro ora nel successivo (una ripetuta e una scartata, di continuo).
+ *
+ * La guardia misura la griglia del core sull'orologio dell'ARM: il blocco di stato si riscrive a
+ * ogni quadro (SEQ_HEAD +1, all'inizio del quadro), la valutazione della presa cade a 428.142 / 450.000
+ * del quadro (425.947 col 240p; h264/disp_ctl.sv). Un thread legge SEQ_HEAD ogni ~0,4 ms e un PLL
+ * ne ricava la griglia. Su questa: la fase d'arrivo media phi delle immagini, la loro dispersione s, e
+ * D, il tempo che il core impiega a decodificare un'immagine (imparato: un'immagine scritta in tempo
+ * per una presa che invece la manca alza D).
+ *
+ * Finché la nuvola degli arrivi (phi +- s) resta lontana dalla scadenza della decodifica (P - D, con
+ * l'incertezza di D) la guardia non fa nulla. Se ci si avvicina, mette un taglio c appena prima della
+ * nuvola: le immagini che arrivano dopo c vengono trattenute fino alla prossima presa e scritte
+ * subito dopo, così vanno tutte, con certezza, alla presa successiva (un quadro di latenza in più,
+ * solo finché la fase è quella); quelle prima di c vanno alla prossima. La presa a cui va
+ * un'immagine dipende allora da dove cade rispetto a c, lontano dalla nuvola, e non dal caso. Con
+ * isteresi: il taglio si sposta se la nuvola gli si avvicina, e la guardia si spegne se la nuvola si
+ * allontana dalla scadenza con largo margine per qualche secondo; con arrivi sparsi su più di
+ * mezzo quadro nessun taglio aiuta e resta spenta. */
+#define G_POLL_US     400
+#define G_MARGIN_US   1000.0
+#define G_D0_US       10500.0     /* D iniziale: 1.200 macroblocchi a ~110.000 al secondo */
+#define G_D_MIN_US    5000.0
+#define G_D_MAX_US    15000.0
+static struct {
+  pthread_t th;
+  volatile bool run;
+  bool th_ok;
+  pthread_mutex_t mx;
+  /* la griglia (protetta da mx) */
+  double P, eoff;                  /* periodo e posizione della valutazione nel quadro, us */
+  double t_ref;                    /* l'inizio di un quadro, us (CLOCK_MONOTONIC) */
+  unsigned samples, outliers;
+  /* il blocco di stato all'ultimo quadro */
+  uint32_t pick, starve;
+  bool have_snap;
+  /* gli arrivi */
+  double ex, ey;                   /* media circolare (EMA) */
+  double mad;                      /* scarto medio assoluto dalla fase media, us */
+  unsigned arrivals;
+  double D;                        /* tempo di decodifica stimato, us */
+  int mode;                        /* 0 taglio alla scadenza, 1 taglio fisso */
+  double cut, fixed_cut;
+  unsigned good_run;               /* immagini col taglio preferito libero (per tornarci) */
+  /* immagini scritte in attesa dell'esito: l'istante della scrittura e la presa attesa */
+  struct { double wr, ev; bool idr; } pend[4];
+  unsigned npend;
+  /* contatori per -stats */
+  unsigned held, misses, switches, hits;
+  double held_us_sum;
+} g = { .mx = PTHREAD_MUTEX_INITIALIZER };
+
+static double g_wrap(double x, double P) {
+  x = fmod(x, P);
+  return x < 0 ? x + P : x;
+}
+static double g_cdist(double a, double b, double P) {   /* distanza circolare */
+  double d = fabs(g_wrap(a - b, P));
+  return d > P / 2 ? P - d : d;
+}
+
+/* il thread della griglia */
+static void *guard_thread(void *arg) {
+  (void)arg;
+  volatile uint64_t *ctrl = NULL;
+  pthread_mutex_lock(&ring_mx);
+  if (ring)
+    ctrl = ((struct h264ring_backend *)ring)->ctrl;   /* be è il primo campo di struct h264ring */
+  pthread_mutex_unlock(&ring_mx);
+  if (!ctrl)
+    return NULL;
+  uint32_t last = (uint32_t)ctrl[H264RING_SEQ_HEAD_W];
+  double t_prev = (double)now_us();
+  while (g.run) {
+    usleep(G_POLL_US);
+    double t = (double)now_us();
+    uint32_t seq = (uint32_t)ctrl[H264RING_SEQ_HEAD_W];
+    if (seq != last) {
+      double s = 0.5 * (t_prev + t);   /* il cambio è caduto tra le due letture */
+      struct h264ring_status st;
+      bool snap = false;
+      pthread_mutex_lock(&ring_mx);
+      if (ring && !gone)
+        snap = h264ring_status(ring, &st) == 0;
+      pthread_mutex_unlock(&ring_mx);
+      pthread_mutex_lock(&g.mx);
+      if (!g.samples) {
+        g.t_ref = s;
+      } else {
+        double k = floor((s - g.t_ref) / g.P + 0.5);
+        double err = s - (g.t_ref + k * g.P);
+        if (fabs(err) > 2500 && g.samples > 60) {
+          if (++g.outliers > 30) g.samples = 0, g.outliers = 0;   /* persa: da capo */
+        } else {
+          g.outliers = 0;
+          g.t_ref += k * g.P + err * (g.samples < 60 ? 0.125 : 0.03);
+        }
+      }
+      if (g.samples < 100000) g.samples++;
+      if (snap) {
+        uint32_t pick = (uint32_t)H264RING_ST(&st, DISP_PICK);
+        uint32_t starve = (uint32_t)H264RING_ST(&st, DISP_STARVE) & 0xffffu;
+        if (g.have_snap && g.samples > 60) {
+          /* la valutazione appena passata: il quadro iniziato a s, meno un periodo, più eoff */
+          double ev = s - g.P + g.eoff;
+          bool starved = ((starve - g.starve) & 0xffffu) != 0;
+          bool picked = pick != g.pick;
+          unsigned j = 0;
+          for (unsigned i = 0; i < g.npend; i++) {
+            if (fabs(g.pend[i].ev - ev) < g.P / 2) {
+              double slack = g.pend[i].ev - g.pend[i].wr;   /* il tempo che aveva per decodificarsi */
+              if (starved && !picked) {
+                g.misses++;
+                if (!g.pend[i].idr && slack + 500 > g.D) g.D = fmin(G_D_MAX_US, slack + 500);
+              } else if (picked) {
+                g.hits++;
+                if (!g.pend[i].idr && slack < g.D + 2000) g.D = fmax(G_D_MIN_US, g.D - 5);
+              }
+            } else if (g.pend[i].ev > ev) {
+              g.pend[j++] = g.pend[i];                        /* non ancora */
+            }
+          }
+          g.npend = j;
+        }
+        g.pick = pick;
+        g.starve = starve;
+        g.have_snap = true;
+      }
+      pthread_mutex_unlock(&g.mx);
+      last = seq;
+    }
+    t_prev = t;
+  }
+  return NULL;
+}
+
+static void guard_start(void) {
+  if (!guard_on || g.th_ok)
+    return;
+  mg_core_info ci;
+  mg_core_get_info(&ci);
+  pthread_mutex_lock(&g.mx);
+  unsigned hz100 = ci.refresh_x100 ? ci.refresh_x100 : 6000;
+  g.P = 1e8 / hz100;
+  g.eoff = g.P * (ci.p240 ? 425947.0 : 428142.0) / 450000.0;
+  g.samples = g.outliers = 0;
+  g.have_snap = false;
+  g.ex = g.ey = 0;
+  g.mad = 0;
+  g.arrivals = 0;
+  if (g.D < G_D_MIN_US) g.D = G_D0_US;   /* resta tra uno stream e l'altro */
+  g.mode = 0;
+  g.good_run = 0;
+  g.npend = 0;
+  g.held = g.misses = g.switches = g.hits = 0;
+  g.held_us_sum = 0;
+  pthread_mutex_unlock(&g.mx);
+  g.run = true;
+  g.th_ok = pthread_create(&g.th, NULL, guard_thread, NULL) == 0;
+}
+
+static void guard_stop(void) {
+  if (!g.th_ok)
+    return;
+  g.run = false;
+  pthread_join(g.th, NULL);
+  g.th_ok = false;
+}
+
+/* Prima di scrivere un'immagine: trattenerla fino alla prossima presa se cade dopo il taglio */
+static void guard_wait(bool idr, uint64_t *held_us) {
+  *held_us = 0;
+  if (!g.th_ok)
+    return;
+  double w = (double)now_us();
+  pthread_mutex_lock(&g.mx);
+  if (g.samples < 90) {
+    pthread_mutex_unlock(&g.mx);
+    return;
+  }
+  double P = g.P;
+  double e0 = g.t_ref + g.eoff;              /* una valutazione */
+  double a = g_wrap(w - e0, P);              /* da quanto è passata l'ultima valutazione */
+  double e_next = w - a + P;
+  /* la fase media e la dispersione degli arrivi */
+  double ang = 2 * M_PI * a / P;
+  double al = g.arrivals < 64 ? 1.0 / (g.arrivals + 1) : 1.0 / 64;
+  g.ex += (cos(ang) - g.ex) * al;
+  g.ey += (sin(ang) - g.ey) * al;
+  double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
+  g.mad += (g_cdist(a, phi, P) - g.mad) * al;
+  g.arrivals++;
+  /* la zona di pericolo: attorno alla scadenza (P - D: dopo, l'immagine non è pronta per la prossima
+   * presa; D varia da un'immagine all'altra, la zona è larga di conseguenza) */
+  double d = P - g.D;
+  double zc = d + 500;
+  double h = 3 * g.mad + G_MARGIN_US;        /* la nuvola degli arrivi, con margine */
+  double zw = h + 1500;
+  if (g.arrivals > 60) {
+    if (2 * h > 0.8 * P) {
+      if (g.mode) g.switches++;
+      g.mode = 0;                            /* arrivi troppo sparsi: nessun taglio aiuta */
+    } else if (g.mode == 0 && g_cdist(phi, zc, P) < 0.8 * zw) {
+      g.mode = 1; g.fixed_cut = g_wrap(phi - h, P); g.switches++; g.good_run = 0;
+    } else if (g.mode == 1) {
+      if (g_cdist(phi, g.fixed_cut, P) < 0.6 * h) {
+        if (g_cdist(phi, zc, P) > zw) g.mode = 0;
+        else g.fixed_cut = g_wrap(phi - h, P);
+        g.switches++;
+        g.good_run = 0;
+      } else if (g_cdist(phi, zc, P) > 1.3 * zw) {
+        if (++g.good_run > 180) { g.mode = 0; g.switches++; g.good_run = 0; }
+      } else {
+        g.good_run = 0;
+      }
+    }
+  }
+  /* modo 0 (arrivi lontani dalla scadenza): niente da fare. Modo 1: taglio appena prima della nuvola,
+   * che va tutta alla presa successiva */
+  double c = g.mode == 0 ? d : g.fixed_cut;
+  g.cut = c;
+  double hold_until = 0, target = a < d ? e_next : e_next + P;
+  if (g.mode == 1) {
+    if (c <= d) {
+      if (a < c) target = e_next;
+      else { target = e_next + P; hold_until = e_next + 200; }
+    } else {
+      if (a < c) { target = e_next + P; hold_until = e_next + 200; }
+      else { target = e_next + 2 * P; hold_until = e_next + P + 200; }
+    }
+  }
+  pthread_mutex_unlock(&g.mx);
+  if (hold_until > w) {
+    for (;;) {
+      double t = (double)now_us();
+      if (t >= hold_until || !g.run || !streaming)
+        break;
+      double left = hold_until - t;
+      usleep(left > 2000 ? 1000 : (useconds_t)(left > 50 ? left : 50));
+    }
+    *held_us = (uint64_t)((double)now_us() - w);
+  }
+  pthread_mutex_lock(&g.mx);
+  if (g.npend == 4) {
+    memmove(&g.pend[0], &g.pend[1], 3 * sizeof(g.pend[0]));
+    g.npend = 3;
+  }
+  g.pend[g.npend].wr = (double)now_us();
+  g.pend[g.npend].ev = target;
+  g.pend[g.npend].idr = idr;
+  g.npend++;
+  if (*held_us) { g.held++; g.held_us_sum += (double)*held_us; }
+  pthread_mutex_unlock(&g.mx);
+}
+
+static void guard_report(void) {
+  if (!g.th_ok)
+    return;
+  pthread_mutex_lock(&g.mx);
+  double P = g.P;
+  double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
+  printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
+         "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",
+         phi / 1000, g.mad / 1000, g.D / 1000, g.cut / 1000, g.mode ? "attivo" : "spento (arrivi lontani)",
+         g.held, g.held ? g.held_us_sum / 1000 / g.held : 0.0, g.misses, g.switches);
+  g.held = g.misses = g.switches = g.hits = 0;
+  g.held_us_sum = 0;
+  pthread_mutex_unlock(&g.mx);
 }
 
 void mg_core_poll(void) {
@@ -677,9 +954,11 @@ void mg_core_stream_begin(void) {
   }
   streaming = true;
   pthread_mutex_unlock(&ring_mx);
+  guard_start();
 }
 
 void mg_core_stream_end(void) {
+  guard_stop();
   pthread_mutex_lock(&ring_mx);
   streaming = false;
   if (ring && !gone && session_ok && h264ring_flush(ring, FLUSH_MS) != 0)
@@ -795,8 +1074,11 @@ static int video_submit(PDECODE_UNIT du) {
   }
 
   uint64_t held_us;
-  bool forced;
-  pace_wait(&held_us, &forced);
+  bool forced = false;
+  if (guard_on)
+    guard_wait(idr, &held_us);
+  else
+    pace_wait(&held_us, &forced);
   int rc = write_record(false, au_buf, (uint32_t)len, idr, VIDEO_WAIT_MS);
   if (rc == 0)
     pace_written++;
