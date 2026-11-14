@@ -402,7 +402,7 @@ int main(int argc, char **argv) {
   key(1, 0x75, 1); key(1, 0x75, 0); poll();
   CHECK("menu: freccia su", mg_input_menu_key(0) == MG_KEY_UP);
   key(0, 0x5A, 1); key(0, 0x5A, 0); poll();
-  CHECK("menu: Invio", mg_input_menu_key(0) == MG_KEY_OK);
+  CHECK("menu: Invio", mg_input_menu_key(0) == MG_KEY_ENTER);
   key(0, 0x76, 1); key(0, 0x76, 0); poll();
   CHECK("menu: Esc", mg_input_menu_key(0) == MG_KEY_BACK);
   pad(0, H264RING_PAD_B, 0, 0); poll(); pad(0, 0, 0, 0); poll();

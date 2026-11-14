@@ -7,7 +7,9 @@ BIN=$D/mister_moonlight
 [ -x "$BIN" ] || chmod +x "$BIN" 2>/dev/null
 [ -f $D/mister_moonlight.conf ] || cp $D/mister_moonlight.conf.esempio $D/mister_moonlight.conf
 eval "$(tr -d '\r' < $D/mister_moonlight.conf)"
-if [ -z "$HOST" ] || [ "$HOST" = 192.168.1.100 ]; then
+# HOST serve solo senza menu (MENU=0); col menu i PC si aggiungono dal menu stesso
+[ "$HOST" = 192.168.1.100 ] && HOST=
+if [ "$MENU" = 0 ] && [ -z "$HOST" ]; then
   echo "Imposta HOST (l'indirizzo del PC con Sunshine) in $D/mister_moonlight.conf"
   exit 1
 fi
@@ -33,7 +35,7 @@ LOG=$D/ultimo_stream.log
 # Durante lo streaming il log sta in RAM (scrivere sulla SD puo' bloccare); alla fine va sulla SD
 TMPLOG=/tmp/mister_moonlight.log
 NETINFO="avvio script: uptime $(cut -d' ' -f1 /proc/uptime) s; rete: $(ip route 2>/dev/null | head -1)"
-echo "Carico il core H264 e apro Moonlight ($HOST)... log in $LOG"
+echo "Carico il core H264 e apro Moonlight${HOST:+ ($HOST)}... log in $LOG"
 # Staccato dallo script: sopravvive al caricamento del core. Alla fine torna al menu
 # del MiSTer, ma solo se e' ancora attivo il core H264.
 setsid nohup bash -c "

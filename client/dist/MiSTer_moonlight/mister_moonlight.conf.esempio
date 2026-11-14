@@ -1,9 +1,10 @@
 # Configurazione di MiSTer Moonlight (usata da Scripts/mister_moonlight.sh)
 
-# Indirizzo IP del PC con Sunshine
+# Indirizzo IP del PC con Sunshine. Con MENU=1 è facoltativo: i PC si aggiungono,
+# rinominano e rimuovono dal menu (HOST, se c'è, entra nell'elenco la prima volta)
 HOST=192.168.1.100
 
-# 1 = all'avvio mostra il menu a schermo (app, bitrate, audio...; le scelte
+# 1 = all'avvio mostra il menu a schermo (PC, app, bitrate, audio...; le scelte
 #     fatte nel menu vengono ricordate in menu.cfg)
 # 0 = avvia direttamente APP con le opzioni di EXTRA
 MENU=1

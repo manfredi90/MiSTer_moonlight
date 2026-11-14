@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.9"
+#define MG_VERSION "0.2.0"
 
 static sem_t quit_sem;
 static volatile bool stop_play;
@@ -126,7 +126,7 @@ static void usage(void) {
   printf("mister_moonlight %s - client Moonlight per Sunshine con uscita sul core H264 del MiSTer\n\n", MG_VERSION);
   printf("Uso: mister_moonlight <azione> <ip host> [opzioni]\n\n");
   printf("Azioni:\n");
-  printf("  menu <ip>      menu a schermo: app di Sunshine, impostazioni, abbinamento\n");
+  printf("  menu [ip]      menu a schermo: elenco dei PC, app di Sunshine, impostazioni, abbinamento\n");
   printf("  stream <ip>    avvia subito lo streaming di un'app (-app)\n");
   printf("  pair <ip>      abbina il MiSTer a Sunshine (il PIN va nella pagina web di Sunshine)\n");
   printf("  unpair <ip>    rimuove l'abbinamento\n");
@@ -418,7 +418,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   mg_core_set_rbf(o.core_rbf);
-  if (!o.host) {
+  if (!o.host && strcmp(o.action, "menu")) {   /* il menu ha il suo elenco dei PC */
     fprintf(stderr, "Serve l'indirizzo IP del PC con Sunshine\n");
     return 1;
   }
