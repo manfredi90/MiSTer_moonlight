@@ -377,6 +377,7 @@ static void pace_wait(uint64_t *held_us, bool *forced) {
  * allontana dalla scadenza con largo margine per qualche secondo; con arrivi sparsi su più di
  * mezzo quadro nessun taglio aiuta e resta spenta. */
 #define G_POLL_US     400
+#define G_XH          600         /* il genlock: i ritardi in più delle ultime 600 immagini (10 s) */
 #define G_MARGIN_US   1000.0
 #define G_D0_US       10500.0     /* D iniziale: 1.200 macroblocchi a ~110.000 al secondo */
 #define G_D_MIN_US    5000.0
@@ -424,6 +425,13 @@ static struct {
   double r_t0, r_min, r_max;
   /* la stima della frequenza del PC all'avvio del genlock (FLL) */
   bool fll_done;
+  /* il ritmo del PC (timestamp RTP) per il genlock */
+  bool rtp_have, q_init, gl_locked;
+  uint32_t rtp_last;
+  int64_t rtp64;
+  double dmin, dmin_t, q, q_tgt, gl_bad_t0, gl_phv;
+  float xh[G_XH];
+  unsigned xh_i, xh_n, xh_cnt, gl_good;
   double fll_start, fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
   unsigned fll_n;
   unsigned r_n;
@@ -432,6 +440,10 @@ static struct {
 static double g_wrap(double x, double P) {
   x = fmod(x, P);
   return x < 0 ? x + P : x;
+}
+static int g_fcmp(const void *a, const void *b) {
+  float x = *(const float *)a, y = *(const float *)b;
+  return (x > y) - (x < y);
 }
 static double g_cdist(double a, double b, double P) {   /* distanza circolare */
   double d = fabs(g_wrap(a - b, P));
@@ -590,6 +602,9 @@ static void guard_start(void) {
   g.fll_done = false;
   g.fll_start = g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
   g.fll_n = 0;
+  g.rtp_have = g.q_init = g.gl_locked = false;
+  g.dmin = g.dmin_t = g.q = g.q_tgt = g.gl_bad_t0 = g.gl_phv = 0;
+  g.xh_i = g.xh_n = g.xh_cnt = g.gl_good = 0;
   gl_problem[0] = 0;
   g.gl_stuck_t0 = 0;
   g.gl_trim = g.gl_trim_sent = 0;
@@ -624,7 +639,7 @@ static void guard_stop(void) {
 }
 
 /* Prima di scrivere un'immagine: trattenerla fino alla prossima presa se cade dopo il taglio */
-static void guard_wait(bool idr, uint64_t *held_us) {
+static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
   *held_us = 0;
   if (!g.th_ok)
     return;
@@ -646,15 +661,10 @@ static void guard_wait(bool idr, uint64_t *held_us) {
   double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
   g.mad += (g_cdist(a, phi, P) - g.mad) * al;
   g.arrivals++;
-  /* il genlock: si porta la presa a cadere subito dopo che l'immagine è pronta. Fase obiettivo
-   * degli arrivi (dall'ultima valutazione): P - D - margine; con D + margine oltre il quadro, un
-   * quadro dopo. Anello PI: la parte proporzionale corregge l'errore in ~3 s, l'integrale (us a
-   * quadro, al massimo 30) impara la differenza di frequenza col PC. GL_TRIM = la frequenza del PLL
-   * video in 2^-16 (0,25 us a quadro; il core ci scivola, 25 unità al secondo, senza salti di riga).
-   * Guadagni scelti col modello (arrivi Wi-Fi sparsi, PC a 60,000, 59,94, ±0,15 %), dopo la stima
-   * della frequenza qui sotto: proporzionale e/150 (~2,5 s), integrale 8e-6 (~20 s). L'integrale deve
-   * seguire il PC anche dopo la stima: sul MiSTer Sunshine mandava 59,98 immagini al secondo nei primi
-   * 20 s e 59,94 poi, e con 2e-6 restava indietro di 5 us a quadro dopo un minuto (errore 1,5-2,4 ms). */
+  /* il genlock: si porta la presa a cadere subito dopo che l'immagine è pronta, muovendo la frequenza
+   * del PLL video del core (GL_TRIM, 2^-16 = 0,25 us a quadro; il core ci scivola, 25 unità al
+   * secondo, senza salti di riga). Stima della frequenza del PC, poi anello di fase sul ritmo del PC
+   * (qui sotto). */
   int gl_send = -1000;
   if (g.gl_state == 3) {
     g.gl_state = 0;
@@ -663,23 +673,56 @@ static void guard_wait(bool idr, uint64_t *held_us) {
       snprintf(gl_problem, sizeof(gl_problem), "il core caricato non ha il genlock");
     printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
   }
-  /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase degli arrivi dice di
-   * quanto il PC è più lento o più veloce (us a quadro). Si misura su 4 s di arrivi regolari
-   * (dispersione sotto 1,5 ms; sopra 2,5 ms si ricomincia): la raffica d'avvio di Sunshine, che può
-   * durare vari secondi, falserebbe la pendenza (sul MiSTer, a 2,5-6,5 s: -0,4 us invece di +16,7).
-   * Il valore va nell'integrale e l'anello di fase parte già alla frequenza giusta; se in 15 s non
-   * ci sono 4 s regolari, si parte da 0. */
-  if (g.gl_state == 2 && g.arrivals > 32 && !g.fll_done) {
+  /* IL RITMO DEL PC, NON GLI ARRIVI. Gli arrivi si spostano con la dimensione delle immagini e col
+   * Wi-Fi (uno scorrimento veloce: immagini grandi, arrivi in ritardo di vari ms): inseguirli muove
+   * la frequenza del core (sul MiSTer: da 59,94 a 60,07 e 59,88 a ogni scorrimento). Il genlock segue
+   * invece il timestamp RTP di ogni immagine (l'orologio del PC, 90 kHz): v = rtp + il ritardo minimo
+   * visto (che sale di 100 us al secondo per seguire la deriva tra i due orologi) è l'arrivo che
+   * l'immagine avrebbe senza code né dimensione. Il ritardo in più di ogni immagine (x) dà il
+   * margine: il 97 % degli x degli ultimi 10 s, che cambia al massimo di 0,3 ms al secondo. */
+  double phv = 0;
+  bool have_v = false;
+  if (g.gl_state == 2) {
+    if (!g.rtp_have) { g.rtp64 = rtp; g.rtp_have = true; }
+    else g.rtp64 += (int32_t)(rtp - g.rtp_last);
+    g.rtp_last = rtp;
+    double rtp_us = (double)g.rtp64 * (1e6 / 90000.0);
+    double d = w - rtp_us;
+    double dt_q = g.dmin_t ? (w - g.dmin_t) / 1e6 : 0;
+    if (!g.dmin_t) g.dmin = d;
+    else g.dmin = fmin(d, g.dmin + 100.0 * dt_q);
+    g.dmin_t = w;
+    double x = d - g.dmin;
+    g.xh[g.xh_i] = (float)x;
+    g.xh_i = (g.xh_i + 1) % G_XH;
+    if (g.xh_n < G_XH) g.xh_n++;
+    if (++g.xh_cnt >= 30 && g.xh_n >= 60) {            /* ogni mezzo secondo: il 97 % */
+      static float tmp[G_XH];
+      memcpy(tmp, g.xh, sizeof(float) * g.xh_n);
+      qsort(tmp, g.xh_n, sizeof(float), g_fcmp);
+      g.q_tgt = tmp[(unsigned)(g.xh_n * 0.97)];
+      g.xh_cnt = 0;
+      if (!g.q_init) { g.q = g.q_tgt; g.q_init = true; }
+    }
+    double qs = 300.0 * dt_q;
+    if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
+    phv = g_wrap(rtp_us + g.dmin - e0, P);
+    have_v = g.q_init;
+  }
+  /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase di v dice di quanto il
+   * PC è più lento o più veloce (us a quadro); 4 s, dopo la raffica d'avvio di Sunshine (arrivi sparsi
+   * sotto 1,5 ms; sopra 2,5 ms si ricomincia; dopo 15 s si parte da 0). Va nell'integrale. */
+  if (g.gl_state == 2 && have_v && !g.fll_done) {
     if (!g.fll_start) g.fll_start = w;
-    if (g.fll_n || g.fll_t0) g.fll_phu += g_wrap(phi - g.fll_prev + P / 2, P) - P / 2;
-    g.fll_prev = phi;
+    if (g.fll_n || g.fll_t0) g.fll_phu += g_wrap(phv - g.fll_prev + P / 2, P) - P / 2;
+    g.fll_prev = phv;
     if (g.mad > 2500) {
       g.fll_n = 0; g.fll_t0 = 0; g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
     } else if (g.mad < 1500) {
       if (!g.fll_t0) { g.fll_t0 = w; g.fll_phu = 0; }
-      double x = (w - g.fll_t0) / 1e6;
-      g.fll_n++; g.fll_sx += x; g.fll_sy += g.fll_phu; g.fll_sxx += x * x; g.fll_sxy += x * g.fll_phu;
-      if (x > 4.0 && g.fll_n > 150) {
+      double xs = (w - g.fll_t0) / 1e6;
+      g.fll_n++; g.fll_sx += xs; g.fll_sy += g.fll_phu; g.fll_sxx += xs * xs; g.fll_sxy += xs * g.fll_phu;
+      if (xs > 4.0 && g.fll_n > 150) {
         double n = g.fll_n, den = n * g.fll_sxx - g.fll_sx * g.fll_sx;
         double slope = den > 0 ? (n * g.fll_sxy - g.fll_sx * g.fll_sy) / den : 0;   /* us di fase al secondo */
         g.gl_integ = slope * P / 1e6;                                               /* us a quadro */
@@ -694,22 +737,51 @@ static void guard_wait(bool idr, uint64_t *held_us) {
       g.fll_done = true;
       printf("[genlock] frequenza del PC non misurata (arrivi irregolari per 15 s): si parte da 0\n");
     }
-  } else if (g.gl_state == 2 && g.arrivals > 32) {
-    double m = 3 * g.mad + 700;
-    double tg = P - g.D - m;
+  } else if (g.gl_state == 2 && have_v) {
+    /* poi la fase: obiettivo P - D - margine - 0,5 ms (un quadro dopo se non ci sta). AGGANCIO: la
+     * frequenza si muove quanto serve (e/150, integrale 8e-6). AGGANCIATO (errore sotto 0,8 ms per
+     * 3 s): la correzione di fase è limitata a +-3 us a quadro (+-0,018 % attorno alla frequenza del
+     * PC) e l'integrale è lento (1e-6): il core resta alla frequenza del PC anche quando il margine o
+     * la decodifica cambiano; la fase ci arriva piano. Errore oltre 5 ms per 10 s: si riaggancia. */
+    double tg = P - g.D - g.q - 500;
     if (tg < 300) tg += P;
     tg = g_wrap(tg, P);
-    double e = g_wrap(phi - tg + P / 2, P) - P / 2;
-    g.gl_integ += e * 8e-6;
+    double e = g_wrap(phv - tg + P / 2, P) - P / 2;
+    double pc = e / 150.0;
+    if (g.gl_locked) {
+      g.gl_integ += e * 1e-6;
+      if (pc > 3) pc = 3;
+      if (pc < -3) pc = -3;
+      if (fabs(e) > 5000) {
+        if (!g.gl_bad_t0) g.gl_bad_t0 = w;
+        else if (w - g.gl_bad_t0 > 10e6) {
+          g.gl_locked = false; g.gl_good = 0; g.gl_bad_t0 = 0;
+          printf("[genlock] fase persa (errore %.1f ms per 10 s): si riaggancia\n", e / 1000);
+        }
+      } else {
+        g.gl_bad_t0 = 0;
+      }
+    } else {
+      g.gl_integ += e * 8e-6;
+      if (fabs(e) < 800) {
+        if (++g.gl_good > 180) {
+          g.gl_locked = true;
+          printf("[genlock] agganciato: core a %.4f Hz, margine %.1f ms\n", g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.q / 1000);
+        }
+      } else {
+        g.gl_good = 0;
+      }
+    }
     if (g.gl_integ > 30) g.gl_integ = 30;
     if (g.gl_integ < -30) g.gl_integ = -30;
-    double corr = e / 150.0 + g.gl_integ;     /* us a quadro */
+    double corr = pc + g.gl_integ;            /* us a quadro */
     int trim = (int)lround(corr * 65536.0 / P);
     if (trim > 127) trim = 127;
     if (trim < -127) trim = -127;
     g.gl_trim = trim;
     g.gl_target = tg;
     g.gl_err = e;
+    g.gl_phv = phv;
     g.gl_err_abs += fabs(e);
     g.gl_n++;
     if (trim != g.gl_trim_sent) { gl_send = trim; g.gl_trim_sent = trim; }
@@ -794,10 +866,10 @@ static void guard_report(void) {
   double P = g.P;
   double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
   if (g.gl_state == 2)
-    printf("[genlock] arrivi a %.1f ms dalla presa (obiettivo %.1f, errore medio %.2f ms, dispersione %.1f ms), "
-           "decodifica %.1f ms, latenza arrivo-schermo ~%.1f ms; trim %+d (%.1f us a quadro dal PC), core a %.4f Hz, %u mancate\n",
-           phi / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0, g.mad / 1000, g.D / 1000,
-           (g.D + 3 * g.mad + 700) / 1000,
+    printf("[genlock] %s: ritmo del PC a %.1f ms dalla presa (obiettivo %.1f, errore medio %.2f ms), margine %.1f ms "
+           "(arrivi sparsi %.1f ms), decodifica %.1f ms, latenza ~%.1f ms; trim %+d (%.1f us a quadro dal PC), core a %.4f Hz, %u mancate\n",
+           g.gl_locked ? "agganciato" : "aggancio", g.gl_phv / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0,
+           g.q / 1000, g.mad / 1000, g.D / 1000, (g.D + g.q + 500) / 1000,
            g.gl_trim, g.gl_integ, g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.misses);
   if (g.gl_state == 2 || g.gl_pll_fail)
     printf("[genlock] PLL video: %s%s%s, stato %u%s, %s 0x%08x\n",
@@ -1273,7 +1345,7 @@ static int video_submit(PDECODE_UNIT du) {
   uint64_t held_us;
   bool forced = false;
   if (guard_on || genlock_req)               /* gli arrivi servono anche al solo genlock */
-    guard_wait(idr, &held_us);
+    guard_wait(idr, &held_us, du->rtpTimestamp);
   else
     pace_wait(&held_us, &forced);
   int rc = write_record(false, au_buf, (uint32_t)len, idr, VIDEO_WAIT_MS);
