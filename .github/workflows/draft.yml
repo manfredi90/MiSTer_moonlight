@@ -29,11 +29,15 @@ jobs:
       - name: Draft release
         run: |
           sha=${{ github.event.workflow_run.head_sha }}
-          tag="build-${sha:0:7}"
-          for t in $(gh release list --limit 50 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' | grep '^build-' || true); do
+          branch="${{ github.event.workflow_run.head_branch }}"
+          branch=${branch//[^A-Za-z0-9._-]/-}
+          tag="build-$branch-${sha:0:7}"
+          # only this branch's previous drafts (and main's older "build-<sha>" ones)
+          for t in $(gh release list --limit 50 --json tagName,isDraft --jq '.[] | select(.isDraft) | .tagName' \
+                     | grep -E "^build-$branch-|^build-[0-9a-f]{7}\$" | grep -v "^$tag\$" || true); do
             gh release delete "$t" --yes || true
           done
           rbf=$(ls sd/_Other/*.rbf)
-          gh release create "$tag" "$rbf" --draft --target "$sha" --title "H264 core $(basename "$rbf" .rbf) (${sha:0:7})" \
+          gh release create "$tag" "$rbf" --draft --target "$sha" --title "H264 core $(basename "$rbf" .rbf) ($branch ${sha:0:7})" \
             --notes "Build of ${sha:0:7} (run ${{ github.event.workflow_run.html_url }}). Not published."
           echo "::notice::draft $tag: $(basename "$rbf")"
