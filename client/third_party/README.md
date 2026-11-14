@@ -4,4 +4,5 @@ Vendored sources:
   moonlight-groovy; `libgamestream/http.c` and `client.c` carry fixes for Sunshine's
   single-threaded HTTPS server (no connection reuse, timeouts, the OS error in `gs_error`).
 - `h264ring/`: owenb321/MiSTer_h264_decoder `hps/` (MIT), tag v1.1.0
-  (eac10641c5af0b808d332bb61344ee2dfdba4271): `include/` and `lib/` unchanged.
+  (eac10641c5af0b808d332bb61344ee2dfdba4271): `include/` and `lib/` unchanged except
+  `h264ring_set_genlock()` (word 34's genlock bits of this repository's core, interface mm 1.5).
