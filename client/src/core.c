@@ -387,6 +387,7 @@ static struct {
   /* la griglia (protetta da mx) */
   double P, eoff;                  /* periodo e posizione della valutazione nel quadro, us */
   double t_ref;                    /* l'inizio di un quadro, us (CLOCK_MONOTONIC) */
+  double Pm;                       /* il periodo dei quadri misurato (col genlock cambia), us */
   unsigned samples, outliers;
   /* il blocco di stato all'ultimo quadro */
   uint32_t pick, starve;
@@ -463,11 +464,13 @@ static void *guard_thread(void *arg) {
         snap = h264ring_status(ring, &st) == 0;
       pthread_mutex_unlock(&ring_mx);
       pthread_mutex_lock(&g.mx);
-      /* il periodo atteso: col genlock il core rallenta / accelera il suo PLL video di trim / 65536 */
-      double Pe = g.P * (1.0 + (g.gl_state == 2 ? g.gl_trim_sent / 65536.0 : 0.0));
+      /* PLL del secondo ordine sugli inizi dei quadri: fase (t_ref) e periodo (Pm), che col genlock
+       * scivola insieme al PLL video del core (non si ricava dal trim: il core ci arriva per gradi) */
       if (!g.samples) {
         g.t_ref = s;
+        g.Pm = g.P;
       } else {
+        double Pe = g.Pm;
         double k = floor((s - g.t_ref) / Pe + 0.5);
         double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
@@ -475,6 +478,11 @@ static void *guard_thread(void *arg) {
         } else {
           g.outliers = 0;
           g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
+          if (k >= 1) {
+            g.Pm += err / k * (g.samples < 60 ? 0.004 : 0.0005);
+            if (g.Pm > g.P * 1.005) g.Pm = g.P * 1.005;
+            if (g.Pm < g.P * 0.995) g.Pm = g.P * 0.995;
+          }
         }
       }
       if (g.samples < 100000) g.samples++;
@@ -605,7 +613,10 @@ static void guard_wait(bool idr, uint64_t *held_us) {
    * degli arrivi (dall'ultima valutazione): P - D - margine; con D + margine oltre il quadro, un
    * quadro dopo. Anello PI: la parte proporzionale corregge l'errore in ~3 s, l'integrale (us a
    * quadro, al massimo 30) impara la differenza di frequenza col PC. GL_TRIM = la frequenza del PLL
-   * video in 2^-16 (0,25 us a quadro; il core ci scivola, senza salti di riga). */
+   * video in 2^-16 (0,25 us a quadro; il core ci scivola, 25 unità al secondo, senza salti di riga).
+   * Guadagni scelti col modello (arrivi Wi-Fi sparsi di 3 ms, PC a 60,000 e a 59,94): la parte
+   * proporzionale toglie l'errore in ~7 s, l'integrale in ~1 minuto; più svelti, col ritardo dello
+   * scivolamento e la media degli arrivi, l'anello oscilla da un estremo all'altro. */
   int gl_send = -1000;
   if (g.gl_state == 3) {
     g.gl_state = 0;
@@ -618,10 +629,10 @@ static void guard_wait(bool idr, uint64_t *held_us) {
     if (tg < 300) tg += P;
     tg = g_wrap(tg, P);
     double e = g_wrap(phi - tg + P / 2, P) - P / 2;
-    g.gl_integ += e * 2.8e-5;
+    g.gl_integ += e * 4e-6;
     if (g.gl_integ > 30) g.gl_integ = 30;
     if (g.gl_integ < -30) g.gl_integ = -30;
-    double corr = e / (fabs(e) > 3000 ? 120.0 : 240.0) + g.gl_integ;   /* us a quadro */
+    double corr = e / 450.0 + g.gl_integ;     /* us a quadro */
     int trim = (int)lround(corr * 65536.0 / P);
     if (trim > 127) trim = 127;
     if (trim < -127) trim = -127;
@@ -713,10 +724,10 @@ static void guard_report(void) {
   double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
   if (g.gl_state == 2)
     printf("[genlock] arrivi a %.1f ms dalla presa (obiettivo %.1f, errore medio %.2f ms, dispersione %.1f ms), "
-           "decodifica %.1f ms, latenza arrivo-schermo ~%.1f ms; trim %+d (%.1f us a quadro dal PC), %u mancate\n",
+           "decodifica %.1f ms, latenza arrivo-schermo ~%.1f ms; trim %+d (%.1f us a quadro dal PC), core a %.4f Hz, %u mancate\n",
            phi / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0, g.mad / 1000, g.D / 1000,
            (g.D + 3 * g.mad + 700) / 1000,
-           g.gl_trim, g.gl_integ, g.misses);
+           g.gl_trim, g.gl_integ, g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.misses);
   else
     printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
            "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",
