@@ -1,5 +1,7 @@
-# After a successful core build, the kept seed's .rbf as a DRAFT release ("build-<sha>"): visible to
-# the repository's collaborators only, nothing is published. The previous build drafts are removed.
+# After a successful core build, the kept seed's .rbf as a DRAFT release ("build-<branch>-<sha>"):
+# visible to the repository's collaborators only, nothing is published; that branch's previous build
+# drafts are removed. The same .rbf also goes to the "builds" branch, <branch>/ (one commit, replaced
+# each time), which a clone can fetch where the release API is not reachable.
 name: draft
 
 on:
@@ -26,7 +28,24 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
 
+      - name: The builds branch
+        run: |
+          sha=${{ github.event.workflow_run.head_sha }}
+          branch="${{ github.event.workflow_run.head_branch }}"
+          branch=${branch//[^A-Za-z0-9._-]/-}
+          git init -q b && cd b
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          if git fetch -q --depth 1 origin builds; then git read-tree --reset -u FETCH_HEAD; fi
+          git rm -q -r --ignore-unmatch "$branch" >/dev/null
+          mkdir -p "$branch" && cp ../sd/_Other/*.rbf "$branch/" && echo "${sha}" > "$branch/SHA"
+          git add -A
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -q -m "builds: $branch ${sha:0:7}"
+          git push -q -f origin HEAD:refs/heads/builds
+          echo "::notice::builds/$branch: $(ls "$branch"/*.rbf | xargs -n1 basename)"
+
       - name: Draft release
+        continue-on-error: true
         run: |
           sha=${{ github.event.workflow_run.head_sha }}
           branch="${{ github.event.workflow_run.head_branch }}"

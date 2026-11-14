@@ -208,7 +208,6 @@ localparam CONF_STR = {
 	"O[22:20],Output Mode,15kHz,31kHz;",
 	"D2O[24],15kHz Mode,480i,240p;",
 	"O[2],Display Shape,4:3,16:9;",
-	"H0O[4:3],Deinterlace,Weave,Bob,Blend;",
 	"h0O[7],HDMI Deinterlace,Weave,Bob;",
 	"O[29],De-flicker,On,Off;",
 	"O[30],Gradient Dither,On,Off;",
@@ -1597,7 +1596,7 @@ localparam int XW_DN = 1 + 1 + 1 + 2 + 1 + 5*12 + 1 + 5 + 1 + 8 + 8 + 1 + 1 + 2 
                        13 + 13 + 14 + 14 + 28 + 28 + 2 + 2 + 12 + 12 + 12 + 12 + 3 + 3 + 1 + 1 + 1 + 6 + 1 + 4*12;
 wire [XW_DN-1:0] xdn_src = {raster_il_eff, prog240_eff, raster_pal, raster_std,
                             geom_nat, geom_rw, geom_rh, geom_l, geom_nt, geom_last,
-                            sh_valid, sh_store, sh_field, sh_w, sh_hf, sh_parity, sh_single, status[4:3], sh_colour,
+                            sh_valid, sh_store, sh_field, sh_w, sh_hf, sh_parity, sh_single, 2'b00 /* Weave: no Deinterlace entry */, sh_colour,
                             fit_ow, fit_oh, fit_ox0, fit_oy0, fit_sx, fit_sy, fit_dh_l2, fit_dv_l2,
                             fit_lx, fit_ty, fit_wc, fit_hc, fit_hpf, fit_vpf,
                             rr_sess, at_sel, idle_vis, sh_siting,
@@ -1940,7 +1939,7 @@ ring_words_sys ring_words_sys_inst (
 	.f_fit_clamp      (st_fit_clamp),
 	.f_fit_snap       (st_fit_snap),
 	.f_osd_aspect     (status[2:1]),       // (interface 0.4) the OSD mirror, word 27: every option as the menu holds it
-	.f_osd_deint      (status[4:3]),
+	.f_osd_deint      (2'b00),
 	.f_osd_video_out  (status[6:5]),
 	.f_osd_hdmi_deint (status[7]),
 	.f_osd_analog_aspect (status[9:8]),
