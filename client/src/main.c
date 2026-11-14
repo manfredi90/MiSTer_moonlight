@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.8"
+#define MG_VERSION "0.2.0"
 
 static sem_t quit_sem;
 static volatile bool stop_play;

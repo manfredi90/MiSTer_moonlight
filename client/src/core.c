@@ -408,7 +408,7 @@ static struct {
   /* il genlock (core di questo repository, interfaccia mm 1.5) */
   int gl_state;                    /* 0 spento, 1 in prova (il core lo applica?), 2 attivo, 3 non supportato */
   double gl_t0;                    /* quando è stato chiesto (per la prova) */
-  int gl_trim, gl_trim_sent;       /* righe ogni 64 quadri */
+  int gl_trim, gl_trim_sent;       /* la frequenza del core in 2^-16 (+ più lenta) */
   double gl_integ;                 /* la parte integrale: us a quadro (la differenza di frequenza col PC) */
   double gl_L;                     /* la durata di una riga, us */
   double gl_target, gl_err;        /* fase obiettivo degli arrivi e l'errore, us */
@@ -463,8 +463,8 @@ static void *guard_thread(void *arg) {
         snap = h264ring_status(ring, &st) == 0;
       pthread_mutex_unlock(&ring_mx);
       pthread_mutex_lock(&g.mx);
-      /* il periodo atteso: col genlock il core allunga / accorcia i quadri di trim / 64 righe in media */
-      double Pe = g.P + (g.gl_state == 2 ? g.gl_trim_sent / 64.0 * g.gl_L : 0.0);
+      /* il periodo atteso: col genlock il core rallenta / accelera il suo PLL video di trim / 65536 */
+      double Pe = g.P * (1.0 + (g.gl_state == 2 ? g.gl_trim_sent / 65536.0 : 0.0));
       if (!g.samples) {
         g.t_ref = s;
       } else {
@@ -604,7 +604,8 @@ static void guard_wait(bool idr, uint64_t *held_us) {
   /* il genlock: si porta la presa a cadere subito dopo che l'immagine è pronta. Fase obiettivo
    * degli arrivi (dall'ultima valutazione): P - D - margine; con D + margine oltre il quadro, un
    * quadro dopo. Anello PI: la parte proporzionale corregge l'errore in ~3 s, l'integrale (us a
-   * quadro, al massimo 60) impara la differenza di frequenza col PC. GL_TRIM = righe ogni 64 quadri. */
+   * quadro, al massimo 30) impara la differenza di frequenza col PC. GL_TRIM = la frequenza del PLL
+   * video in 2^-16 (0,25 us a quadro; il core ci scivola, senza salti di riga). */
   int gl_send = -1000;
   if (g.gl_state == 3) {
     g.gl_state = 0;
@@ -618,12 +619,12 @@ static void guard_wait(bool idr, uint64_t *held_us) {
     tg = g_wrap(tg, P);
     double e = g_wrap(phi - tg + P / 2, P) - P / 2;
     g.gl_integ += e * 2.8e-5;
-    if (g.gl_integ > 60) g.gl_integ = 60;
-    if (g.gl_integ < -60) g.gl_integ = -60;
-    double corr = e / (fabs(e) > 3000 ? 90.0 : 180.0) + g.gl_integ;   /* us a quadro */
-    int trim = (int)lround(64.0 * corr / g.gl_L);
-    if (trim > 64) trim = 64;
-    if (trim < -64) trim = -64;
+    if (g.gl_integ > 30) g.gl_integ = 30;
+    if (g.gl_integ < -30) g.gl_integ = -30;
+    double corr = e / (fabs(e) > 3000 ? 120.0 : 240.0) + g.gl_integ;   /* us a quadro */
+    int trim = (int)lround(corr * 65536.0 / P);
+    if (trim > 127) trim = 127;
+    if (trim < -127) trim = -127;
     g.gl_trim = trim;
     g.gl_target = tg;
     g.gl_err = e;

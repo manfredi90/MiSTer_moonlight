@@ -867,7 +867,7 @@ int h264ring_set_atten(h264ring *r, unsigned half_db)
  * en = 0. Kept in r->ctl, so a new session re-writes it like the pause and the volume. */
 int h264ring_set_genlock(h264ring *r, int en, int trim)
 {
-    if (!r || trim < -64 || trim > 64)
+    if (!r || trim < -127 || trim > 127)
         return -EINVAL;
     r->ctl = (r->ctl & ~(0x1FFu << 16)) | (en ? ((1u << 24) | (((uint32_t)trim & 0xFFu) << 16)) : 0u);
     ctrl_lo_store(r, H264RING_W_PAUSE, r->ctl);

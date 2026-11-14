@@ -142,6 +142,8 @@ sys_pll sys_pll (
 );
 wire clk_vid, clk_vid_dv, vid_locked;
 wire [63:0] vid_reconfig_to_pll, vid_reconfig_from_pll;   // (mm) the raster's frequency, finely
+wire        ctl_gl_en;                   // (mm 1.5) the genlock (word 34's GL_EN, during a session; ring_rd)
+wire  [7:0] ctl_gl_trim;                 // ... its trim: the raster's frequency in 2^-16, signed, + slower
 vid_pll vid_pll (
 	.refclk   (CLK_50M),
 	.rst      (1'b0),
@@ -151,18 +153,18 @@ vid_pll vid_pll (
 	.reconfig_to_pll   (vid_reconfig_to_pll),
 	.reconfig_from_pll (vid_reconfig_from_pll)
 );
-// (mm) THE PLL TEST: the OSD's "PLL Test" alternates the raster between 60.000 Hz and 1/1024 faster
-// every 5 s by vid_pll's K alone (h264/vid_pll_tune.sv), to see whether a CRT shows the changes
-wire        vt_reset, vt_wait, vt_read, vt_write, vt_fast, vt_ok;
+// (mm) THE GENLOCK (interface mm 1.5): word 34's GL_TRIM sets the raster's frequency in 2^-16 steps
+// through vid_pll's K alone, gliding (h264/vid_pll_tune.sv); the lines and fields never change
+wire        vt_reset, vt_wait, vt_read, vt_write, vt_moving, vt_ok;
 wire  [5:0] vt_addr;
 wire [31:0] vt_rdata, vt_wdata;
-wire        status_plltest;
 vid_pll_tune vid_pll_tune_inst (
 	.clk              (CLK_50M),
 	.locked           (vid_locked),
-	.test             (status_plltest),
-	.fast             (vt_fast),
+	.gl_en            (ctl_gl_en),             // clk_sys, quasi-static: crossed inside
+	.gl_trim          (ctl_gl_trim),
 	.ok               (vt_ok),
+	.moving           (vt_moving),
 	.mgmt_reset       (vt_reset),
 	.mgmt_waitrequest (vt_wait),
 	.mgmt_read        (vt_read),
@@ -246,7 +248,6 @@ localparam CONF_STR = {
 	"h0O[7],HDMI Deinterlace,Weave,Bob;",
 	"O[29],De-flicker,On,Off;",
 	"O[30],Gradient Dither,On,Off;",
-	"O[25],PLL Test,Off,On;",
 	"-;",
 	"R[17],Send Home to the program;",
 	"R[18],Program menu;",
@@ -264,7 +265,6 @@ localparam CONF_STR = {
 // =========================================================================
 wire  [1:0] buttons;
 wire [127:0] status;
-assign status_plltest = status[25];      // (mm) the OSD's PLL Test
 // interface 0.13: the program's rumble back to Main (ring_rd, clk_sys; declared before hps_io uses it)
 wire [95:0] rumble;                  // (0.13) program words 36-38 as passed to Main (0 outside a session)
 wire [31:0] rum_changes;
@@ -440,8 +440,6 @@ wire  [3:0] af_n;
 wire [63:0] af_dout;
 wire        ctl_pause, ctl_err;          // word 34 as applied (the pause during a session)
 wire  [7:0] ctl_atten;
-wire        ctl_gl_en;                   // (mm 1.5) the genlock (word 34's GL_EN, during a session)
-wire  [7:0] ctl_gl_trim;                 // ... its trim: lines per 64 refreshes, signed
 wire        rr_sess, rr_eos_seen;
 wire  [7:0] rr_state, rr_err;
 wire [31:0] rr_err_pos;
@@ -728,8 +726,8 @@ sync_gen sync_gen_inst (
 	.interlaced (v_il),
 	.prog240    (v_prog240),
 	.std        (v_std),              // P6 steps 5 / 6: 59.94 / 60.00 / 50 Hz (Refresh Rate, below)
-	.gl_en      (v_gl_en),            // (mm 1.5) the genlock: a front-porch line more / less
-	.gl_trim    (v_gl_trim),
+	.gl_en      (1'b0),               // (mm 1.5) the line-trim genlock is retired (a CRT's vertical
+	.gl_trim    (8'd0),               //   count-down jumps at a field a line off): vid_pll_tune instead
 	.nat        (v_nat),              // stage 2: the native raster, taken at a frame's first dot
 	.g_w        (v_rw),
 	.g_h        (v_rh),
