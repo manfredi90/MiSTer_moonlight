@@ -111,8 +111,9 @@ static uint32_t pace_written, pace_base;   /* scritte dall'inizio dello stream; 
 
 void mg_core_set_ritmo(bool on) { rt.on = on; }
 void mg_core_set_pacing(bool on) { pacing = on; }
-static bool guard_on;
+static bool guard_on, genlock_req;
 void mg_core_set_guard(bool on) { guard_on = on; }
+void mg_core_set_genlock(bool on) { genlock_req = on; }
 
 static uint64_t now_us(void) {
   struct timespec ts;
@@ -404,6 +405,15 @@ static struct {
   /* contatori per -stats */
   unsigned held, misses, switches, hits;
   double held_us_sum;
+  /* il genlock (core di questo repository, interfaccia mm 1.5) */
+  int gl_state;                    /* 0 spento, 1 in prova (il core lo applica?), 2 attivo, 3 non supportato */
+  double gl_t0;                    /* quando è stato chiesto (per la prova) */
+  int gl_trim, gl_trim_sent;       /* righe ogni 64 quadri */
+  double gl_integ;                 /* la parte integrale: us a quadro (la differenza di frequenza col PC) */
+  double gl_L;                     /* la durata di una riga, us */
+  double gl_target, gl_err;        /* fase obiettivo degli arrivi e l'errore, us */
+  double gl_err_abs;               /* per -stats: errore medio assoluto */
+  unsigned gl_n;
 } g = { .mx = PTHREAD_MUTEX_INITIALIZER };
 
 static double g_wrap(double x, double P) {
@@ -440,16 +450,18 @@ static void *guard_thread(void *arg) {
         snap = h264ring_status(ring, &st) == 0;
       pthread_mutex_unlock(&ring_mx);
       pthread_mutex_lock(&g.mx);
+      /* il periodo atteso: col genlock il core allunga / accorcia i quadri di trim / 64 righe in media */
+      double Pe = g.P + (g.gl_state == 2 ? g.gl_trim_sent / 64.0 * g.gl_L : 0.0);
       if (!g.samples) {
         g.t_ref = s;
       } else {
-        double k = floor((s - g.t_ref) / g.P + 0.5);
-        double err = s - (g.t_ref + k * g.P);
+        double k = floor((s - g.t_ref) / Pe + 0.5);
+        double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
           if (++g.outliers > 30) g.samples = 0, g.outliers = 0;   /* persa: da capo */
         } else {
           g.outliers = 0;
-          g.t_ref += k * g.P + err * (g.samples < 60 ? 0.125 : 0.03);
+          g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
         }
       }
       if (g.samples < 100000) g.samples++;
@@ -470,7 +482,7 @@ static void *guard_thread(void *arg) {
                 if (!g.pend[i].idr && slack + 500 > g.D) g.D = fmin(G_D_MAX_US, slack + 500);
               } else if (picked) {
                 g.hits++;
-                if (!g.pend[i].idr && slack < g.D + 2000) g.D = fmax(G_D_MIN_US, g.D - 5);
+                if (!g.pend[i].idr && slack < g.D + 2000) g.D = fmax(G_D_MIN_US, g.D - (g.gl_state == 2 ? 1 : 5));
               }
             } else if (g.pend[i].ev > ev) {
               g.pend[j++] = g.pend[i];                        /* non ancora */
@@ -481,6 +493,16 @@ static void *guard_thread(void *arg) {
         g.pick = pick;
         g.starve = starve;
         g.have_snap = true;
+        /* il genlock: il core lo applica? (parola 45: [24] GL_EN applicato, [1] parola 34 rifiutata) */
+        if (g.gl_state == 1) {
+          uint64_t w45 = st.w[45];
+          if ((w45 >> 24) & 1) {
+            g.gl_state = 2;
+            printf("[genlock] il core lo applica\n");
+          } else if (((w45 >> 1) & 1) || s - g.gl_t0 > 1500000) {
+            g.gl_state = 3;    /* core senza genlock: si toglie la richiesta (la parola 34 sarebbe rifiutata) */
+          }
+        }
       }
       pthread_mutex_unlock(&g.mx);
       last = seq;
@@ -491,7 +513,7 @@ static void *guard_thread(void *arg) {
 }
 
 static void guard_start(void) {
-  if (!guard_on || g.th_ok)
+  if ((!guard_on && !genlock_req) || g.th_ok)
     return;
   mg_core_info ci;
   mg_core_get_info(&ci);
@@ -510,7 +532,19 @@ static void guard_start(void) {
   g.npend = 0;
   g.held = g.misses = g.switches = g.hits = 0;
   g.held_us_sum = 0;
+  g.gl_state = genlock_req ? 1 : 0;
+  g.gl_t0 = (double)now_us();
+  g.gl_trim = g.gl_trim_sent = 0;
+  g.gl_integ = 0;
+  g.gl_L = g.P / ((ci.interlaced || ci.p240) ? 262.5 : 525.0);
+  g.gl_err_abs = 0;
+  g.gl_n = 0;
   pthread_mutex_unlock(&g.mx);
+  if (genlock_req) {
+    pthread_mutex_lock(&ring_mx);
+    if (ring) h264ring_set_genlock(ring, 1, 0);
+    pthread_mutex_unlock(&ring_mx);
+  }
   g.run = true;
   g.th_ok = pthread_create(&g.th, NULL, guard_thread, NULL) == 0;
 }
@@ -521,6 +555,13 @@ static void guard_stop(void) {
   g.run = false;
   pthread_join(g.th, NULL);
   g.th_ok = false;
+  if (g.gl_state) {
+    /* fuori dallo stream il raster torna a 60,000 Hz esatti */
+    pthread_mutex_lock(&ring_mx);
+    if (ring) h264ring_set_genlock(ring, 0, 0);
+    pthread_mutex_unlock(&ring_mx);
+    g.gl_state = 0;
+  }
 }
 
 /* Prima di scrivere un'immagine: trattenerla fino alla prossima presa se cade dopo il taglio */
@@ -546,13 +587,48 @@ static void guard_wait(bool idr, uint64_t *held_us) {
   double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
   g.mad += (g_cdist(a, phi, P) - g.mad) * al;
   g.arrivals++;
+  /* il genlock: si porta la presa a cadere subito dopo che l'immagine è pronta. Fase obiettivo
+   * degli arrivi (dall'ultima valutazione): P - D - margine; con D + margine oltre il quadro, un
+   * quadro dopo. Anello PI: la parte proporzionale corregge l'errore in ~3 s, l'integrale (us a
+   * quadro, al massimo 60) impara la differenza di frequenza col PC. GL_TRIM = righe ogni 64 quadri. */
+  int gl_send = -1000;
+  if (g.gl_state == 3) {
+    g.gl_state = 0;
+    gl_send = 1001;                          /* togliere la richiesta */
+    printf("[genlock] il core non lo supporta: %s\n", guard_on ? "resta la guardia" : "spento");
+  }
+  if (g.gl_state == 2 && g.arrivals > 32) {
+    double m = 3 * g.mad + 700;
+    double tg = P - g.D - m;
+    if (tg < 300) tg += P;
+    tg = g_wrap(tg, P);
+    double e = g_wrap(phi - tg + P / 2, P) - P / 2;
+    g.gl_integ += e * 2.8e-5;
+    if (g.gl_integ > 60) g.gl_integ = 60;
+    if (g.gl_integ < -60) g.gl_integ = -60;
+    double corr = e / (fabs(e) > 3000 ? 90.0 : 180.0) + g.gl_integ;   /* us a quadro */
+    int trim = (int)lround(64.0 * corr / g.gl_L);
+    if (trim > 64) trim = 64;
+    if (trim < -64) trim = -64;
+    g.gl_trim = trim;
+    g.gl_target = tg;
+    g.gl_err = e;
+    g.gl_err_abs += fabs(e);
+    g.gl_n++;
+    if (trim != g.gl_trim_sent) { gl_send = trim; g.gl_trim_sent = trim; }
+  }
   /* la zona di pericolo: attorno alla scadenza (P - D: dopo, l'immagine non è pronta per la prossima
    * presa; D varia da un'immagine all'altra, la zona è larga di conseguenza) */
   double d = P - g.D;
   double zc = d + 500;
   double h = 3 * g.mad + G_MARGIN_US;        /* la nuvola degli arrivi, con margine */
   double zw = h + 1500;
-  if (g.arrivals > 60) {
+  if (g.gl_state) {
+    if (g.mode) g.switches++;
+    g.mode = 0;                              /* col genlock (o mentre lo si prova) la guardia tace */
+  } else if (!guard_on) {
+    g.mode = 0;
+  } else if (g.arrivals > 60) {
     if (2 * h > 0.8 * P) {
       if (g.mode) g.switches++;
       g.mode = 0;                            /* arrivi troppo sparsi: nessun taglio aiuta */
@@ -586,6 +662,11 @@ static void guard_wait(bool idr, uint64_t *held_us) {
     }
   }
   pthread_mutex_unlock(&g.mx);
+  if (gl_send != -1000) {
+    pthread_mutex_lock(&ring_mx);
+    if (ring) h264ring_set_genlock(ring, gl_send != 1001, gl_send == 1001 ? 0 : gl_send);
+    pthread_mutex_unlock(&ring_mx);
+  }
   if (hold_until > w) {
     for (;;) {
       double t = (double)now_us();
@@ -615,10 +696,19 @@ static void guard_report(void) {
   pthread_mutex_lock(&g.mx);
   double P = g.P;
   double phi = g_wrap(atan2(g.ey, g.ex) * P / (2 * M_PI), P);
-  printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
-         "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",
-         phi / 1000, g.mad / 1000, g.D / 1000, g.cut / 1000, g.mode ? "attivo" : "spento (arrivi lontani)",
-         g.held, g.held ? g.held_us_sum / 1000 / g.held : 0.0, g.misses, g.switches);
+  if (g.gl_state == 2)
+    printf("[genlock] arrivi a %.1f ms dalla presa (obiettivo %.1f, errore medio %.2f ms, dispersione %.1f ms), "
+           "decodifica %.1f ms, latenza arrivo-schermo ~%.1f ms; trim %+d (%.1f us a quadro dal PC), %u mancate\n",
+           phi / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0, g.mad / 1000, g.D / 1000,
+           (g.D + 3 * g.mad + 700) / 1000,
+           g.gl_trim, g.gl_integ, g.misses);
+  else
+    printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
+           "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",
+           phi / 1000, g.mad / 1000, g.D / 1000, g.cut / 1000, g.mode ? "attivo" : "spento (arrivi lontani)",
+           g.held, g.held ? g.held_us_sum / 1000 / g.held : 0.0, g.misses, g.switches);
+  g.gl_err_abs = 0;
+  g.gl_n = 0;
   g.held = g.misses = g.switches = g.hits = 0;
   g.held_us_sum = 0;
   pthread_mutex_unlock(&g.mx);
