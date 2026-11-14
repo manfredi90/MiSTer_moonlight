@@ -50,7 +50,9 @@ module vid_pll (
 	// (frequencies only, the Fitter choosing) the reconfiguration ports were left unconnected on
 	// hardware -- every read 0, waitrequest high for good. The values are the ones the Fitter chose
 	// then (H264.fit.rpt): VCO 445.661998 MHz = 50 x (8 + 3922335847 / 2^32), N bypassed, M 4 + 4,
-	// C0 3 + 3 (74.277), C1 9 + 9 with PRST 4 (24.759, 60 degrees = 6732 ps)
+	// C0 3 + 3 (74.277), C1 9 + 9 with PRST 4 (24.759, 60 degrees = 6732 ps), and the NORMAL mode with
+	// global-clock feedback the Fitter had used (direct mode is refused here: "mimic_fbclk_type none
+	// illegal" -- clk_vid_dv leaves on the HDMI transmitter's clock pin)
 	input  wire [63:0] reconfig_to_pll,
 	output wire [63:0] reconfig_from_pll
 );
@@ -62,7 +64,7 @@ module vid_pll (
 		.reference_clock_frequency("50.0 MHz"),
 		.pll_fractional_cout(32),
 		.pll_dsm_out_sel("1st_order"),
-		.operation_mode("direct"),
+		.operation_mode("normal"),
 		.number_of_clocks(2),
 		.output_clock_frequency0("74.276999 MHz"),
 		.phase_shift0("0 ps"),
@@ -259,9 +261,9 @@ module vid_pll (
 		.pll_bwctrl(4000),
 		.pll_output_clk_frequency("445.661998 MHz"),
 		.pll_fractional_division("3922335847"),
-		.mimic_fbclk_type("none"),
+		.mimic_fbclk_type("gclk"),
 		.pll_fbclk_mux_1("glb"),
-		.pll_fbclk_mux_2("m_cnt"),
+		.pll_fbclk_mux_2("fb_1"),
 		.pll_m_cnt_in_src("ph_mux_clk"),
 		.pll_slf_rst("true")
 	) altera_pll_i (
