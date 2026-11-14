@@ -14,8 +14,12 @@
 // target past K's range is clamped (M never changes). `ok`: K0 and M were read.
 //
 // mgmt: the reconfiguration core's Avalon slave on CLK_50M (sys/pll_cfg/pll_cfg.v): waitrequest
-// mode (the reset default), a write held until waitrequest drops; reads of ANY_DPRIO (0x20) take
-// the DPRIO address from writedata[5:0], M_REG (4) returns the M counter's {hi, lo}.
+// mode (the reset default), a write held until waitrequest drops. A READ IS NOT HELD: the core
+// never raises waitrequest for one; it walks READ_IDLE -> READ_WAIT -> READ -> READ_POST_WAIT and
+// its readdata holds the value for the single cycle 3 clocks after the read was seen (0 otherwise)
+// -- so a read is a one-cycle pulse and the data is taken 3 cycles later (the first version took
+// readdata at once: M read 0, `ok` never rose, nothing was ever written). Reads of ANY_DPRIO
+// (0x20) take the DPRIO address from writedata[5:0]; M_REG (4) returns the M counter's {hi, lo}.
 
 `default_nettype none
 
@@ -29,6 +33,7 @@ module vid_pll_tune #(
     input  wire  [7:0] gl_trim,        // ... GL_TRIM (async, quasi-static; taken when stable)
     output logic       ok,             // K0 / M were read
     output logic       moving,         // K is not yet at its target
+    output logic [31:0] k_out,         // the K last written (K0 before any write)
     // to sys/pll_cfg
     output logic       mgmt_reset,
     input  wire        mgmt_waitrequest,
@@ -51,6 +56,7 @@ module vid_pll_tune #(
     typedef enum logic [3:0] {S_RST, S_WAIT, S_RD_M, S_RD_KL, S_RD_KH, S_CALC, S_STEP, S_IDLE, S_WR_K, S_WR_GO} st_t;
     st_t st;
     logic [27:0] tmr;
+    logic [2:0]  rcnt;                  // cycles since a read pulse
     logic [19:0] tick;
     logic [15:0] m_raw, k_lo;
     logic [31:0] k0, k_now;
@@ -59,7 +65,7 @@ module vid_pll_tune #(
     logic signed [34:0] tgt_s;          // the target, before clamping (signed, 35 bits)
     logic [31:0] k_tgt, k_wr;
     wire  [8:0]  m_val = {1'b0, m_raw[15:8]} + {1'b0, m_raw[7:0]};
-    wire         rd_done = mgmt_read && !mgmt_waitrequest;
+    wire         rd_done = rcnt == 3'd3;   // the read's data is on mgmt_readdata this cycle
     wire         wr_done = mgmt_write && !mgmt_waitrequest;
     // the target: K0 - trim * step, clamped to K's range
     wire signed [8:0]  trim_s = en ? {tr_q[7], tr_q} : 9'sd0;
@@ -74,8 +80,10 @@ module vid_pll_tune #(
     always_ff @(posedge clk) begin
         if (!lk) begin
             st <= S_RST; tmr <= '0; tick <= '0; mgmt_reset <= 1'b1; mgmt_write <= 1'b0; mgmt_read <= 1'b0;
-            mgmt_address <= '0; mgmt_writedata <= '0; ok <= 1'b0; moving <= 1'b0;
+            mgmt_address <= '0; mgmt_writedata <= '0; ok <= 1'b0; moving <= 1'b0; rcnt <= '0;
         end else begin
+            if (mgmt_read) mgmt_read <= 1'b0;                          // a read is one cycle
+            rcnt <= mgmt_read ? 3'd1 : (rcnt != 3'd0 && rcnt != 3'd7) ? rcnt + 1'b1 : 3'd0;
             tick <= (tick == T_TICK) ? 20'd0 : tick + 1'b1;
             k_tgt <= clamped;
             case (st)
@@ -87,17 +95,15 @@ module vid_pll_tune #(
                 end
             end
             S_RD_M: if (rd_done) begin
-                m_raw <= mgmt_readdata[15:0]; mgmt_read <= 1'b0; st <= S_RD_KL;
+                m_raw <= mgmt_readdata[15:0];                          // ANY_DPRIO 0x18: K[15:0]
+                mgmt_address <= 6'h20; mgmt_writedata <= 32'h18; mgmt_read <= 1'b1; st <= S_RD_KL;
             end
-            S_RD_KL: if (!mgmt_read) begin                             // ANY_DPRIO 0x18: K[15:0]
-                mgmt_address <= 6'h20; mgmt_writedata <= 32'h18; mgmt_read <= 1'b1;
-            end else if (rd_done) begin
-                k_lo <= mgmt_readdata[15:0]; mgmt_read <= 1'b0; st <= S_RD_KH;
+            S_RD_KL: if (rd_done) begin
+                k_lo <= mgmt_readdata[15:0];                           // ANY_DPRIO 0x19: K[31:16]
+                mgmt_address <= 6'h20; mgmt_writedata <= 32'h19; mgmt_read <= 1'b1; st <= S_RD_KH;
             end
-            S_RD_KH: if (!mgmt_read) begin                             // ANY_DPRIO 0x19: K[31:16]
-                mgmt_address <= 6'h20; mgmt_writedata <= 32'h19; mgmt_read <= 1'b1;
-            end else if (rd_done) begin
-                k0 <= {mgmt_readdata[15:0], k_lo}; mgmt_read <= 1'b0; st <= S_CALC;
+            S_RD_KH: if (rd_done) begin
+                k0 <= {mgmt_readdata[15:0], k_lo}; st <= S_CALC;
             end
             S_CALC: begin mk <= {m_val, k0}; st <= S_STEP; end
             S_STEP: begin step <= mk[40:16]; k_now <= k0; ok <= (m_val != 9'd0); st <= S_IDLE; end
@@ -119,6 +125,7 @@ module vid_pll_tune #(
             endcase
         end
     end
+    assign k_out = k_now;
 endmodule
 
 `default_nettype wire

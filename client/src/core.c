@@ -388,6 +388,7 @@ static struct {
   double P, eoff;                  /* periodo e posizione della valutazione nel quadro, us */
   double t_ref;                    /* l'inizio di un quadro, us (CLOCK_MONOTONIC) */
   double Pm;                       /* il periodo dei quadri misurato (col genlock cambia), us */
+  uint64_t w45;                    /* l'ultima parola 45: [25] PLL letto, [26] in movimento, [63:32] K */
   unsigned samples, outliers;
   /* il blocco di stato all'ultimo quadro */
   uint32_t pick, starve;
@@ -515,6 +516,7 @@ static void *guard_thread(void *arg) {
         g.starve = starve;
         g.have_snap = true;
         /* il genlock: il core lo applica? (parola 45: [24] GL_EN applicato, [1] parola 34 rifiutata) */
+        g.w45 = st.w[45];
         if (g.gl_state == 1) {
           uint64_t w45 = st.w[45];
           if ((w45 >> 24) & 1) {
@@ -728,6 +730,9 @@ static void guard_report(void) {
            phi / 1000, g.gl_target / 1000, g.gl_n ? g.gl_err_abs / g.gl_n / 1000 : 0.0, g.mad / 1000, g.D / 1000,
            (g.D + 3 * g.mad + 700) / 1000,
            g.gl_trim, g.gl_integ, g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.misses);
+  if (g.gl_state == 2)
+    printf("[genlock] PLL video: %s%s, K 0x%08x\n", (g.w45 >> 25) & 1 ? "letto" : "NON letto (il core non lo muove)",
+           (g.w45 >> 26) & 1 ? ", in movimento" : "", (unsigned)(g.w45 >> 32));
   else
     printf("[guardia] arrivi a %.1f ms dalla presa (dispersione %.1f ms), decodifica %.1f ms, taglio a %.1f ms (%s); "
            "%u trattenute (media %.1f ms), %u mancate, %u cambi di taglio\n",

@@ -375,7 +375,10 @@ WORDS = [
                  ("ctl_err", 1, 1, "(0.5) the last word 34 read had a reserved bit set: refused, the previous values kept"),
                  ("atten", 8, 8, "(0.5) the attenuation applied (word 34's ATTEN)"),
                  ("gl_trim", 16, 8, "(mm 1.5) the genlock trim applied (word 34's GL_TRIM; 0 without GL_EN)"),
-                 ("gl_en", 24, 1, "(mm 1.5) the genlock is applied (word 34's GL_EN, during a session)")]),
+                 ("gl_en", 24, 1, "(mm 1.5) the genlock is applied (word 34's GL_EN, during a session)"),
+                 ("pll_ok", 25, 1, "(mm 1.5) the video PLL's M and K were read back: the genlock can move it"),
+                 ("pll_moving", 26, 1, "(mm 1.5) the video PLL's K is gliding toward the genlock's target"),
+                 ("pll_k", 32, 32, "(mm 1.5) the video PLL's delta-sigma K last written (its fractional multiplier; diagnostics)")]),
     # 0.9: the overlay plane's status (docs/architecture.md "The overlay plane")
     (46, "sys", [("ovl_gen", 0, 32, "(0.9) the overlay: the generation of the last consistent descriptor read"),
                  ("ovl_state", 32, 2, "(0.9) 0 off, 1 accepted (shown while a session is open), 2 refused"),
