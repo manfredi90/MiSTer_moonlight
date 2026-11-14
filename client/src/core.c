@@ -74,34 +74,45 @@ static int16_t *pcm2;
 
 static mg_core_counters n;
 
-/* ---------- ritmo: quando arrivano le immagini rispetto alla presa del core ----------
- * Lo STC del core (90 kHz) è legato al raster: 1.500 tick a quadro a 60,000 Hz (1.501,5 a
- * 59,94). Il core prende l'immagine nuova (bassa latenza) a riga ~500 di ogni quadro: la fase
- * della presa (STC mod quadro) è fissa e la si vede quando DISP_PICK cresce (letto ogni 2 ms).
- * Per ogni access unit: la fase di scrittura e il margine fino alla presa; una AU scritta troppo
- * a ridosso della presa (meno del tempo di decodifica) slitta di un quadro: un quadro ripetuto
- * ora, due immagini nel successivo (una saltata). */
+/* ---------- il ritmo delle immagini ----------
+ * In bassa latenza il core prende, a riga ~500 di ogni quadro, la più vecchia immagine decodificata;
+ * se ne aspetta già un'altra dietro, la più vecchia la scarta (riga 490). Se le immagini arrivano
+ * vicino a quel momento, un ritardo di qualche ms (Wi-Fi, decodifica) le fa cadere ora prima ora
+ * dopo: un quadro ripetuto e poi un'immagine scartata, a raffiche, ogni volta che il ritmo del PC
+ * (59,95 per esempio) porta gli arrivi su quel punto.
+ *
+ * Il passo (pacing): al core si scrive un'immagine solo quando la precedente è già stata presa (o
+ * scartata). Dopo un arrivo in ritardo (un quadro ripetuto) le immagini seguenti vengono scritte
+ * subito dopo ogni presa, con un quadro intero per decodificarle: niente più raffiche, solo la
+ * ripetizione che lo scarto di ritmo col PC rende inevitabile. Si scrive comunque se dietro c'è già
+ * un'immagine più nuova (non si accumula ritardo) o dopo PACE_MAX_MS (un'immagine persa).
+ *
+ * Con -stats: ogni immagine saltata / ripetuta all'istante, e ogni 10 s un riepilogo. */
 #define RITMO_PERIOD_S 10
+#define PACE_MAX_MS    50
+static bool pacing = true;
 static struct {
   bool on;
-  uint32_t period_q;           /* tick STC a quadro x 2 (1.500 x 2, o 3.003 a 59,94) */
-  uint64_t stc_last;
-  uint32_t pick_last, skip_last, starve_last, late_last;
-  int pick_phase_q;            /* fase della presa (x2), -1 finché non vista */
-  int pick_phase_hist[16];
-  uint64_t t0_ms;
+  uint32_t pick_last, skip_last, starve_last;
+  uint64_t t0_ms, t_last_ms;
   /* finestra corrente */
-  unsigned frames;
+  unsigned frames, held, held_us_max, forced, lost;
+  uint64_t held_us_sum;
   uint32_t rtp_first, rtp_last;
-  uint64_t stc_first, stc_lastw;
-  int margin_min, margin_max, margin_hist[10];   /* margini in ms, 0-1, 1-2, 2-4, 4-6, 6-8, 8-10, 10-12, 12-14, 14-16, 16+ */
   int64_t jit_min, jit_max;    /* arrivo - tempo del PC (rtp), us */
-  unsigned skips, starves, lates, picks;
+  unsigned skips, starves, picks;
 } rt;
+static uint32_t pace_written, pace_base;   /* scritte dall'inizio dello stream; prese + scartate all'inizio */
 
 void mg_core_set_ritmo(bool on) { rt.on = on; }
+void mg_core_set_pacing(bool on) { pacing = on; }
 
-static uint64_t stc_of(const struct h264ring_status *st) { return H264RING_ST(st, STC); }
+static uint64_t now_us(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
+}
+
 
 /* overlay */
 static struct h264ring_fb fb;
@@ -223,18 +234,14 @@ static void poll_status_locked(void) {
 }
 
 static void ritmo_reset_window(void) {
-  rt.frames = 0;
-  rt.margin_min = 1 << 30;
-  rt.margin_max = -1;
-  memset(rt.margin_hist, 0, sizeof(rt.margin_hist));
+  rt.frames = rt.held = rt.held_us_max = rt.forced = rt.lost = 0;
+  rt.held_us_sum = 0;
   rt.jit_min = INT64_MAX;
   rt.jit_max = INT64_MIN;
-  rt.skips = rt.starves = rt.lates = rt.picks = 0;
+  rt.skips = rt.starves = rt.picks = 0;
 }
 
-static double ms_of_q(int q) { return q / 2.0 / 90.0; } /* tick STC x2 -> ms */
-
-/* Ogni ~2 ms dal thread dell'input durante lo stream: la presa del core e gli scatti */
+/* Ogni ~2 ms dal thread dell'input durante lo stream: gli scatti, all'istante */
 void mg_core_tick(void) {
   if (!rt.on || !streaming || restarting)
     return;
@@ -244,40 +251,18 @@ void mg_core_tick(void) {
   pthread_mutex_unlock(&ring_mx);
   if (!ok)
     return;
-  uint64_t stc = stc_of(&st);
   uint32_t pick = (uint32_t)H264RING_ST(&st, DISP_PICK), skip = (uint32_t)H264RING_ST(&st, DISP_SKIP);
-  uint32_t starve = (uint32_t)H264RING_ST(&st, DISP_STARVE), late = (uint32_t)H264RING_ST(&st, DISP_LATE);
+  uint32_t starve = (uint32_t)H264RING_ST(&st, DISP_STARVE);
   if (!rt.t0_ms) {
-    rt.t0_ms = now_ms();
-    rt.pick_last = pick; rt.skip_last = skip; rt.starve_last = starve; rt.late_last = late;
-    rt.pick_phase_q = -1;
-    memset(rt.pick_phase_hist, 0, sizeof(rt.pick_phase_hist));
-    mg_core_info ci;
-    mg_core_get_info(&ci);
-    rt.period_q = ci.refresh_x100 == 6000 ? 3000 : ci.refresh_x100 == 5000 ? 3600 : 3003;
+    rt.t0_ms = rt.t_last_ms = now_ms();
+    rt.pick_last = pick; rt.skip_last = skip; rt.starve_last = starve;
     ritmo_reset_window();
-    rt.rtp_first = 0;
-    rt.stc_first = 0;
   }
   double t = (now_ms() - rt.t0_ms) / 1000.0;
-  if (pick != rt.pick_last) {
-    /* la presa è avvenuta fra la lettura precedente e questa: la fase di questa (al più ~2 ms dopo) */
-    if (pick - rt.pick_last == 1 && rt.stc_last) {
-      int ph = (int)((stc * 2) % rt.period_q);
-      int b = ph * 16 / (int)rt.period_q;
-      rt.pick_phase_hist[b]++;
-      /* la fase più frequente */
-      int best = 0;
-      for (int i = 1; i < 16; i++)
-        if (rt.pick_phase_hist[i] > rt.pick_phase_hist[best]) best = i;
-      if (rt.pick_phase_q < 0 || b == best)
-        rt.pick_phase_q = ph;
-    }
-    rt.picks += pick - rt.pick_last;
-    rt.pick_last = pick;
-  }
+  rt.picks += pick - rt.pick_last;
+  rt.pick_last = pick;
   if (skip != rt.skip_last) {
-    printf("[ritmo] %7.2f s: %u immagini saltate (due pronte in un quadro)\n", t, skip - rt.skip_last);
+    printf("[ritmo] %7.2f s: %u immagini scartate (due pronte nello stesso quadro)\n", t, skip - rt.skip_last);
     rt.skips += skip - rt.skip_last;
     rt.skip_last = skip;
   }
@@ -286,55 +271,76 @@ void mg_core_tick(void) {
     rt.starves += (uint16_t)(starve - rt.starve_last);
     rt.starve_last = starve;
   }
-  if ((uint16_t)(late - rt.late_last)) {
-    rt.lates += (uint16_t)(late - rt.late_last);
-    rt.late_last = late;
-  }
-  rt.stc_last = stc;
 }
 
-/* dopo la scrittura di una AU (lo STC letto subito dopo) */
-static void ritmo_au(PDECODE_UNIT du, uint64_t stc) {
+static void ritmo_au(PDECODE_UNIT du, uint64_t held_us, bool forced) {
   if (!rt.on || !rt.t0_ms)
     return;
   int64_t jit = (int64_t)du->receiveTimeUs - (int64_t)((uint64_t)du->rtpTimestamp * 1000000ull / 90000ull);
-  if (!rt.frames) {
+  if (!rt.frames)
     rt.rtp_first = du->rtpTimestamp;
-    rt.stc_first = stc;
-  }
   rt.frames++;
   rt.rtp_last = du->rtpTimestamp;
-  rt.stc_lastw = stc;
   if (jit < rt.jit_min) rt.jit_min = jit;
   if (jit > rt.jit_max) rt.jit_max = jit;
-  if (rt.pick_phase_q >= 0) {
-    int ph = (int)((stc * 2) % rt.period_q);
-    int m = (rt.pick_phase_q - ph + (int)rt.period_q) % (int)rt.period_q; /* x2 tick fino alla presa */
-    if (m < rt.margin_min) rt.margin_min = m;
-    if (m > rt.margin_max) rt.margin_max = m;
-    double ms = ms_of_q(m);
-    static const double edges[10] = { 1, 2, 4, 6, 8, 10, 12, 14, 16, 1e9 };
-    for (int i = 0; i < 10; i++)
-      if (ms < edges[i]) { rt.margin_hist[i]++; break; }
+  if (held_us) {
+    rt.held++;
+    rt.held_us_sum += held_us;
+    if (held_us > rt.held_us_max) rt.held_us_max = (unsigned)held_us;
   }
-  double t = (now_ms() - rt.t0_ms) / 1000.0;
-  static double t_last;
-  if (t - t_last >= RITMO_PERIOD_S && rt.frames > 10) {
-    t_last = t;
+  if (forced) rt.forced++;
+  if (now_ms() - rt.t_last_ms >= RITMO_PERIOD_S * 1000u && rt.frames > 10) {
+    double t = (now_ms() - rt.t0_ms) / 1000.0;
+    rt.t_last_ms = now_ms();
     double drtp = (double)(uint32_t)(rt.rtp_last - rt.rtp_first);
-    double dstc = (double)(rt.stc_lastw - rt.stc_first);
     double fps = drtp > 0 ? (rt.frames - 1) * 90000.0 / drtp : 0;
-    double ppm = dstc > 0 ? (drtp / dstc - 1.0) * 1e6 : 0;
-    printf("[ritmo] %7.1f s: %u AU, il PC a %.3f fps (orologio del PC %+.0f ppm sul core); presa a fase %.1f ms; "
-           "margine AU->presa %.1f..%.1f ms [<1:%d <2:%d <4:%d <6:%d <8:%d <10:%d <12:%d <14:%d <16:%d >16:%d]; "
-           "arrivo +-%.1f ms; prese %u, saltate %u, ripetute %u, in ritardo %u\n",
-           t, rt.frames, fps, ppm, rt.pick_phase_q >= 0 ? ms_of_q(rt.pick_phase_q) : -1.0,
-           rt.margin_max >= 0 ? ms_of_q(rt.margin_min) : -1.0, rt.margin_max >= 0 ? ms_of_q(rt.margin_max) : -1.0,
-           rt.margin_hist[0], rt.margin_hist[1], rt.margin_hist[2], rt.margin_hist[3], rt.margin_hist[4],
-           rt.margin_hist[5], rt.margin_hist[6], rt.margin_hist[7], rt.margin_hist[8], rt.margin_hist[9],
-           (rt.jit_max - rt.jit_min) / 2000.0, rt.picks, rt.skips, rt.starves, rt.lates);
+    printf("[ritmo] %7.1f s: %u immagini, il PC a %.3f fps, arrivo +-%.1f ms; passo %s: %u trattenute "
+           "(media %.1f ms, max %.1f), %u scritte con una piu' nuova dietro, %u perse; "
+           "core: %u prese, %u scartate, %u ripetute\n",
+           t, rt.frames, fps, (rt.jit_max - rt.jit_min) / 2000.0, pacing ? "attivo" : "spento", rt.held,
+           rt.held ? rt.held_us_sum / 1000.0 / rt.held : 0.0, rt.held_us_max / 1000.0, rt.forced, rt.lost,
+           rt.picks, rt.skips, rt.starves);
     ritmo_reset_window();
   }
+}
+
+/* Aspetta che l'immagine precedente sia stata presa o scartata dal core (il passo) */
+static void pace_wait(uint64_t *held_us, bool *forced) {
+  *held_us = 0;
+  *forced = false;
+  if (!pacing)
+    return;
+  uint64_t t0 = now_us();
+  for (;;) {
+    struct h264ring_status st;
+    pthread_mutex_lock(&ring_mx);
+    int ok = ring && session_ok && streaming && h264ring_status(ring, &st) == 0;
+    pthread_mutex_unlock(&ring_mx);
+    if (!ok)
+      return;
+    uint32_t done = (uint32_t)H264RING_ST(&st, DISP_PICK) + (uint32_t)H264RING_ST(&st, DISP_SKIP) - pace_base;
+    int32_t pending = (int32_t)(pace_written - done);
+    if (pending <= 0) {
+      if (pending < 0)
+        pace_base += (uint32_t)pending; /* contate più prese che scritte (riavvio): si riallinea */
+      break;
+    }
+    uint64_t dt = now_us() - t0;
+    if (LiGetPendingVideoFrames() > 0) {
+      *forced = true; /* ne è arrivata un'altra: niente ritardo accumulato, il core scarta la vecchia */
+      break;
+    }
+    if (dt >= PACE_MAX_MS * 1000u) {
+      /* un'immagine mai presa (persa dal decoder): non la si aspetta più */
+      pace_base -= (uint32_t)pending;
+      if (rt.on) rt.lost++;
+      break;
+    }
+    usleep(300);
+  }
+  *held_us = now_us() - t0;
+  if (*held_us < 500)
+    *held_us = 0;
 }
 
 void mg_core_poll(void) {
@@ -654,7 +660,13 @@ void mg_core_stream_begin(void) {
   idr_asked_ms = idr_written_ms = 0;
   cavlc_refused = false;
   rt.t0_ms = 0;
-  rt.stc_last = 0;
+  {
+    struct h264ring_status st;
+    pace_written = 0;
+    pace_base = 0;
+    if (ring && h264ring_status(ring, &st) == 0)
+      pace_base = (uint32_t)H264RING_ST(&st, DISP_PICK) + (uint32_t)H264RING_ST(&st, DISP_SKIP);
+  }
   streaming = true;
   pthread_mutex_unlock(&ring_mx);
 }
@@ -774,7 +786,12 @@ static int video_submit(PDECODE_UNIT du) {
     len += (size_t)e->length;
   }
 
+  uint64_t held_us;
+  bool forced;
+  pace_wait(&held_us, &forced);
   int rc = write_record(false, au_buf, (uint32_t)len, idr, VIDEO_WAIT_MS);
+  if (rc == 0)
+    pace_written++;
   if (rc == -EOPNOTSUPP) {
     pthread_mutex_lock(&ring_mx);
     printf("[core] lo stream non si puo' dare al core (%s)\n", h264ring_rewrite_why(ring));
@@ -808,12 +825,8 @@ static int video_submit(PDECODE_UNIT du) {
   n.au++;
   n.au_bytes += len;
 
+  ritmo_au(du, held_us, forced);
   pthread_mutex_lock(&ring_mx);
-  if (rt.on) {
-    struct h264ring_status st;
-    if (h264ring_status(ring, &st) == 0)
-      ritmo_au(du, stc_of(&st));
-  }
   {
     struct h264ring_cavlc_stats cs;
     h264ring_rewrite_stats(ring, &cs);

@@ -24,6 +24,8 @@ void mg_core_poll(void);
 /* Diagnostica del ritmo delle immagini (-stats): ogni ~2 ms durante lo stream, dal thread
  * dell'input; stampa le immagini saltate/ripetute e ogni 10 s un riepilogo */
 void mg_core_set_ritmo(bool on);
+/* Il passo: un'immagine al core solo dopo che la precedente è stata presa (predefinito: sì) */
+void mg_core_set_pacing(bool on);
 void mg_core_tick(void);
 bool mg_core_osd_open(void);
 
