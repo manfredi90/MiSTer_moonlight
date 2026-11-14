@@ -495,6 +495,7 @@ set_global_assignment -name SEARCH_PATH h264
 set_global_assignment -name SYSTEMVERILOG_FILE h264/emu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/sys_pll.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/vid_pll.sv
+set_global_assignment -name SYSTEMVERILOG_FILE h264/vid_pll_tune.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/sync_gen.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/display_policy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE h264/csync_smpte.sv

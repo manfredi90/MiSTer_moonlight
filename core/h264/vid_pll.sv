@@ -42,7 +42,12 @@ module vid_pll (
 	input  wire rst,
 	output wire outclk_0, // 74.277 MHz -- clk_vid
 	output wire outclk_1, // 24.759 MHz -- clk_vid_dv: the HDMI transmitter's clock on direct_video (below)
-	output wire locked
+	output wire locked,
+	// (mm) dynamic reconfiguration (h264/vid_pll_tune.sv through sys/pll_cfg): the DSM's K -- the
+	// raster's frequency in steps of 2^-32 of the multiplier, as Main's HDMI low-latency mode does
+	// with pll_hdmi (sys/pll_hdmi_adj.vhd)
+	input  wire [63:0] reconfig_to_pll,
+	output wire [63:0] reconfig_from_pll
 );
 
 `ifdef QUARTUS
@@ -107,11 +112,13 @@ module vid_pll (
 		.phase_shift17("0 ps"),
 		.duty_cycle17(50),
 		.pll_type("General"),
-		.pll_subtype("General")
+		.pll_subtype("Reconfigurable")
 	) altera_pll_i (
 		.rst      (rst),
 		.outclk   ({outclk_1, outclk_0}),
 		.locked   (locked),
+		.reconfig_to_pll   (reconfig_to_pll),
+		.reconfig_from_pll (reconfig_from_pll),
 		.fboutclk ( ),
 		.fbclk    (1'b0),
 		.refclk   (refclk)
@@ -121,6 +128,7 @@ module vid_pll (
 	assign outclk_0 = refclk;
 	assign outclk_1 = refclk;
 	assign locked   = 1'b1;
+	assign reconfig_from_pll = 64'd0;
 `endif
 
 endmodule

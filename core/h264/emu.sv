@@ -141,12 +141,47 @@ sys_pll sys_pll (
 	.locked   (locked)
 );
 wire clk_vid, clk_vid_dv, vid_locked;
+wire [63:0] vid_reconfig_to_pll, vid_reconfig_from_pll;   // (mm) the raster's frequency, finely
 vid_pll vid_pll (
 	.refclk   (CLK_50M),
 	.rst      (1'b0),
 	.outclk_0 (clk_vid),
 	.outclk_1 (clk_vid_dv),
-	.locked   (vid_locked)
+	.locked   (vid_locked),
+	.reconfig_to_pll   (vid_reconfig_to_pll),
+	.reconfig_from_pll (vid_reconfig_from_pll)
+);
+// (mm) THE PLL TEST: the OSD's "PLL Test" alternates the raster between 60.000 Hz and 1/1024 faster
+// every 5 s by vid_pll's K alone (h264/vid_pll_tune.sv), to see whether a CRT shows the changes
+wire        vt_reset, vt_wait, vt_read, vt_write, vt_fast, vt_ok;
+wire  [5:0] vt_addr;
+wire [31:0] vt_rdata, vt_wdata;
+wire        status_plltest;
+vid_pll_tune vid_pll_tune_inst (
+	.clk              (CLK_50M),
+	.locked           (vid_locked),
+	.test             (status_plltest),
+	.fast             (vt_fast),
+	.ok               (vt_ok),
+	.mgmt_reset       (vt_reset),
+	.mgmt_waitrequest (vt_wait),
+	.mgmt_read        (vt_read),
+	.mgmt_write       (vt_write),
+	.mgmt_readdata    (vt_rdata),
+	.mgmt_address     (vt_addr),
+	.mgmt_writedata   (vt_wdata)
+);
+pll_cfg vid_pll_cfg (
+	.mgmt_clk          (CLK_50M),
+	.mgmt_reset        (vt_reset),
+	.mgmt_waitrequest  (vt_wait),
+	.mgmt_read         (vt_read),
+	.mgmt_write        (vt_write),
+	.mgmt_readdata     (vt_rdata),
+	.mgmt_address      (vt_addr),
+	.mgmt_writedata    (vt_wdata),
+	.reconfig_to_pll   (vid_reconfig_to_pll),
+	.reconfig_from_pll (vid_reconfig_from_pll)
 );
 
 // OSD "Reset" (status[0]) joins the framework reset. user_rst_qn is a REGISTERED copy
@@ -173,7 +208,7 @@ assign LOCKED    = locked & vid_locked;
 //     stock Main truncates the About line at 30 chars and splits CONF_STR on , and ;.
 //   * This string is INSIDE CONF_STR = inside the netlist, so changing it re-rolls the
 //     fit. Set it before the build that will ship, not after.
-`define CORE_VERSION "mm-0.2.1-p3e"
+`define CORE_VERSION "mm-0.2.2-plltest"
 
 // The OSD definition. Every option, button and file extension here MUST be documented
 // in the manual: tools/docs_check.py parses this block (by its terminator, never a
@@ -211,6 +246,7 @@ localparam CONF_STR = {
 	"h0O[7],HDMI Deinterlace,Weave,Bob;",
 	"O[29],De-flicker,On,Off;",
 	"O[30],Gradient Dither,On,Off;",
+	"O[25],PLL Test,Off,On;",
 	"-;",
 	"R[17],Send Home to the program;",
 	"R[18],Program menu;",
@@ -228,6 +264,7 @@ localparam CONF_STR = {
 // =========================================================================
 wire  [1:0] buttons;
 wire [127:0] status;
+assign status_plltest = status[25];      // (mm) the OSD's PLL Test
 // interface 0.13: the program's rumble back to Main (ring_rd, clk_sys; declared before hps_io uses it)
 wire [95:0] rumble;                  // (0.13) program words 36-38 as passed to Main (0 outside a session)
 wire [31:0] rum_changes;
