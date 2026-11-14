@@ -679,7 +679,8 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
    * invece il timestamp RTP di ogni immagine (l'orologio del PC, 90 kHz): v = rtp + il ritardo di base
    * (il 3 % dei ritardi degli ultimi 10 s, che segue anche la deriva tra i due orologi) è l'arrivo che
    * l'immagine avrebbe senza code né dimensione. Il margine è il 97 % dei ritardi meno la base, e
-   * cambia al massimo di 0,15 ms al secondo (agganciata, la fase ne segue 0,18). */
+   * misura solo dopo la raffica d'avvio (dalla stima della frequenza); in aggancio segue subito, da
+   * agganciato cambia al massimo di 0,15 ms al secondo (la fase ne segue 0,18). */
   double phv = 0;
   bool have_v = false;
   if (g.gl_state == 2) {
@@ -711,8 +712,12 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       g.xh_cnt = 0;
       if (!g.q_init) { g.q = g.q_tgt; g.q_init = true; }
     }
-    double qs = 150.0 * dt_q;            /* sotto i 0,18 ms al secondo che la fase agganciata può seguire */
-    if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
+    if (!g.gl_locked) {
+      g.q = g.q_tgt;                       /* in aggancio il margine segue subito */
+    } else {
+      double qs = 150.0 * dt_q;            /* agganciata: sotto i 0,18 ms al secondo che la fase può seguire */
+      if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
+    }
     phv = g_wrap(rtp_us + g.d_ref + g.dmin - e0, P);
     have_v = g.q_init;
   }
@@ -738,6 +743,10 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
         g.fll_done = true;
         printf("[genlock] frequenza del PC: %+.1f us a quadro rispetto al core (%.4f Hz), misurata in %.1f s\n",
                g.gl_integ, 1e6 / (P + g.gl_integ), (w - g.fll_start) / 1e6);
+        /* i ritardi della raffica d'avvio non contano per il margine (sul MiSTer: 50 ms, scesi di
+         * 0,15 ms al secondo, con un'immagine su cinque persa per minuti): si ricomincia da qui */
+        g.xh_i = g.xh_n = g.xh_cnt = 0;
+        g.q_init = false;
       }
     }
     if (!g.fll_done && w - g.fll_start > 15e6) {
