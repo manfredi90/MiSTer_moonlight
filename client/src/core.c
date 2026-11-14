@@ -424,7 +424,7 @@ static struct {
   double r_t0, r_min, r_max;
   /* la stima della frequenza del PC all'avvio del genlock (FLL) */
   bool fll_done;
-  double fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
+  double fll_start, fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
   unsigned fll_n;
   unsigned r_n;
 } g = { .mx = PTHREAD_MUTEX_INITIALIZER };
@@ -588,7 +588,7 @@ static void guard_start(void) {
   g.gl_t0 = (double)now_us();
   g.gl_pll_fail = false;
   g.fll_done = false;
-  g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
+  g.fll_start = g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
   g.fll_n = 0;
   gl_problem[0] = 0;
   g.gl_stuck_t0 = 0;
@@ -663,25 +663,35 @@ static void guard_wait(bool idr, uint64_t *held_us) {
     printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
   }
   /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase degli arrivi dice di
-   * quanto il PC è più lento o più veloce (us a quadro); dai 2,5 ai 6,5 s, dopo la raffica d'avvio
-   * di Sunshine. Il valore va nell'integrale e l'anello di fase parte già alla frequenza giusta
-   * (sul modello: aggancio in 10-25 s invece di 30-40 con un PC a 59,94). */
+   * quanto il PC è più lento o più veloce (us a quadro). Si misura su 4 s di arrivi regolari
+   * (dispersione sotto 1,5 ms; sopra 2,5 ms si ricomincia): la raffica d'avvio di Sunshine, che può
+   * durare vari secondi, falserebbe la pendenza (sul MiSTer, a 2,5-6,5 s: -0,4 us invece di +16,7).
+   * Il valore va nell'integrale e l'anello di fase parte già alla frequenza giusta; se in 15 s non
+   * ci sono 4 s regolari, si parte da 0. */
   if (g.gl_state == 2 && g.arrivals > 32 && !g.fll_done) {
-    if (g.fll_n == 0 && !g.fll_t0) { g.fll_t0 = w; g.fll_prev = phi; g.fll_phu = 0; }
-    g.fll_phu += g_wrap(phi - g.fll_prev + P / 2, P) - P / 2;
+    if (!g.fll_start) g.fll_start = w;
+    if (g.fll_n || g.fll_t0) g.fll_phu += g_wrap(phi - g.fll_prev + P / 2, P) - P / 2;
     g.fll_prev = phi;
-    double x = (w - g.fll_t0) / 1e6;
-    if (x > 2.5) {
+    if (g.mad > 2500) {
+      g.fll_n = 0; g.fll_t0 = 0; g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
+    } else if (g.mad < 1500) {
+      if (!g.fll_t0) { g.fll_t0 = w; g.fll_phu = 0; }
+      double x = (w - g.fll_t0) / 1e6;
       g.fll_n++; g.fll_sx += x; g.fll_sy += g.fll_phu; g.fll_sxx += x * x; g.fll_sxy += x * g.fll_phu;
+      if (x > 4.0 && g.fll_n > 150) {
+        double n = g.fll_n, den = n * g.fll_sxx - g.fll_sx * g.fll_sx;
+        double slope = den > 0 ? (n * g.fll_sxy - g.fll_sx * g.fll_sy) / den : 0;   /* us di fase al secondo */
+        g.gl_integ = slope * P / 1e6;                                               /* us a quadro */
+        if (g.gl_integ > 30) g.gl_integ = 30;
+        if (g.gl_integ < -30) g.gl_integ = -30;
+        g.fll_done = true;
+        printf("[genlock] frequenza del PC: %+.1f us a quadro rispetto al core (%.4f Hz), misurata in %.1f s\n",
+               g.gl_integ, 1e6 / (P + g.gl_integ), (w - g.fll_start) / 1e6);
+      }
     }
-    if (x > 6.5) {
-      double n = g.fll_n, den = n * g.fll_sxx - g.fll_sx * g.fll_sx;
-      double slope = den > 0 ? (n * g.fll_sxy - g.fll_sx * g.fll_sy) / den : 0;   /* us di fase al secondo */
-      g.gl_integ = slope * P / 1e6;                                               /* us a quadro */
-      if (g.gl_integ > 30) g.gl_integ = 30;
-      if (g.gl_integ < -30) g.gl_integ = -30;
+    if (!g.fll_done && w - g.fll_start > 15e6) {
       g.fll_done = true;
-      printf("[genlock] frequenza del PC: %+.1f us a quadro rispetto al core (%.4f Hz)\n", g.gl_integ, 1e6 / (P + g.gl_integ));
+      printf("[genlock] frequenza del PC non misurata (arrivi irregolari per 15 s): si parte da 0\n");
     }
   } else if (g.gl_state == 2 && g.arrivals > 32) {
     double m = 3 * g.mad + 700;
