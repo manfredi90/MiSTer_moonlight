@@ -17,6 +17,8 @@ Changes here:
 - **No 50 Hz, no 59.94 Hz, no native HDMI raster, no refresh matching, no film speed.** Output Mode
   is 15kHz (480i) or 31kHz (480p); at 15kHz, 15kHz Mode 240p (upstream's 240p Playback) switches a
   playing stream to 240p. HDMI still gets the picture through the MiSTer scaler.
+- No *Deinterlace* entry: it only applies to field-coded streams, which Sunshine never sends (the
+  field path stays, at Weave).
 - The core is named H264 (`_Other/H264_*.rbf`), the pad's J line is upstream's twelve
   Xbox-style buttons (the input region carries them as they are), the OSD's *Send Home to the
   program* and *Program menu* entries are back, `CORE_VERSION` is `mm-<version>`.
