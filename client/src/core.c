@@ -38,6 +38,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <stdarg.h>
+#include <limits.h>
 #include <unistd.h>
 
 #define AU_FLAGS        (H264RING_F_LOW_LATENCY | H264RING_F_GRAPHICS)
@@ -112,6 +114,52 @@ static uint32_t pace_written, pace_base;   /* scritte dall'inizio dello stream; 
 void mg_core_set_ritmo(bool on) { rt.on = on; }
 void mg_core_set_pacing(bool on) { pacing = on; }
 static bool guard_on, genlock_req;
+
+/* LA TRACCIA (con -stats): una riga per immagine e una per quadro del core, in memoria; scritta in
+ * traccia.csv accanto al programma alla fine dello stream (scrivere sulla SD durante lo stream può
+ * bloccare). Serve a rigiocare una sessione vera fuori dal MiSTer (client/tools/genlock_replay.py). */
+static char *tr_buf;
+static size_t tr_len, tr_cap;
+static bool tr_on;
+static void tr_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void tr_printf(const char *fmt, ...) {
+  static pthread_mutex_t tr_mx = PTHREAD_MUTEX_INITIALIZER;   /* il thread video e quello della griglia */
+  if (!tr_on || !tr_buf)
+    return;
+  pthread_mutex_lock(&tr_mx);
+  if (tr_len + 256 <= tr_cap) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(tr_buf + tr_len, tr_cap - tr_len, fmt, ap);
+    va_end(ap);
+    if (n > 0 && tr_len + (size_t)n < tr_cap) tr_len += (size_t)n;
+  }
+  pthread_mutex_unlock(&tr_mx);
+}
+static void tr_begin(void) {
+  tr_len = 0;
+  if (!tr_buf) { tr_cap = 12u << 20; tr_buf = malloc(tr_cap); }
+  tr_on = tr_buf != NULL;
+  tr_printf("# tipo F (immagine): w_us,recv_us,rtp,byte,idr,phv,errore,obiettivo,margine,D,trim,agganciato,trattenuta_us,v_us\n"
+            "# tipo E (inizio quadro del core): s_us,seq,prese,scartate,ripetute,Pm_us,t_ref_us,eoff_us\n");
+}
+static void tr_end(void) {
+  if (!tr_on || !tr_len)
+    return;
+  tr_on = false;
+  char path[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 32);
+  if (n <= 0) return;
+  path[n] = 0;
+  char *sl = strrchr(path, '/');
+  if (!sl) return;
+  strcpy(sl + 1, "traccia.csv");
+  FILE *f = fopen(path, "w");
+  if (!f) return;
+  fwrite(tr_buf, 1, tr_len, f);
+  fclose(f);
+  printf("[traccia] %zu byte in %s\n", tr_len, path);
+}
 static char gl_problem[200];           /* perché il genlock chiesto non ha lavorato (vuoto: nessun problema) */
 const char *mg_core_genlock_problem(void) { return gl_problem; }
 void mg_core_set_guard(bool on) { guard_on = on; }
@@ -538,6 +586,9 @@ static void *guard_thread(void *arg) {
         g.pick = pick;
         g.starve = starve;
         g.have_snap = true;
+        if (g.gl_state == 2)
+          tr_printf("E,%.0f,%u,%u,%u,%u,%.1f,%.0f,%.0f\n", s, seq, pick, (uint32_t)H264RING_ST(&st, DISP_SKIP), starve,
+                    g.Pm, g.t_ref, g.eoff);
         /* il genlock: il core lo applica? (parola 45: [24] GL_EN applicato, [1] parola 34 rifiutata) */
         g.w45 = st.w[45];
         /* 480i <-> 240p dall'OSD: la presa cade altrove nel quadro e il raster riparte con un'altra
@@ -593,6 +644,7 @@ static void *guard_thread(void *arg) {
 static void guard_start(void) {
   if ((!guard_on && !genlock_req) || g.th_ok)
     return;
+  if (rt.on && genlock_req) tr_begin(); else tr_on = false;
   mg_core_info ci;
   mg_core_get_info(&ci);
   pthread_mutex_lock(&g.mx);
@@ -645,6 +697,7 @@ static void guard_stop(void) {
   g.run = false;
   pthread_join(g.th, NULL);
   g.th_ok = false;
+  tr_end();
   if (g.gl_state) {
     /* fuori dallo stream il raster torna a 60,000 Hz esatti */
     pthread_mutex_lock(&ring_mx);
@@ -655,7 +708,8 @@ static void guard_stop(void) {
 }
 
 /* Prima di scrivere un'immagine: trattenerla fino alla prossima presa se cade dopo il taglio */
-static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
+static void guard_wait(bool idr, uint64_t *held_us, PDECODE_UNIT du) {
+  uint32_t rtp = du->rtpTimestamp;
   *held_us = 0;
   if (!g.th_ok)
     return;
@@ -697,7 +751,7 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
    * l'immagine avrebbe senza code né dimensione. Il margine è il 99,5 % dei ritardi meno la base, e
    * misura solo dopo la raffica d'avvio (dalla stima della frequenza); in aggancio segue subito, da
    * agganciato cambia al massimo di 0,15 ms al secondo (la fase ne segue 0,18). */
-  double phv = 0;
+  double phv = 0, v_abs = 0;
   bool have_v = false;
   if (g.gl_state == 2) {
     if (!g.rtp_have) { g.rtp64 = rtp; g.rtp_have = true; }
@@ -736,7 +790,8 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       double qs = 150.0 * dt_q;            /* agganciata: sotto i 0,18 ms al secondo che la fase può seguire */
       if (g.q < g.q_tgt) g.q = fmin(g.q_tgt, g.q + qs); else g.q = fmax(g.q_tgt, g.q - qs);
     }
-    phv = g_wrap(rtp_us + g.d_ref + g.dmin - e0, P);
+    v_abs = rtp_us + g.d_ref + g.dmin;
+    phv = g_wrap(v_abs - e0, P);
     have_v = g.q_init;
   }
   /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase di v dice di quanto il
@@ -805,7 +860,7 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
        * col Wi-Fi a volte non succedeva mai, e l'aggancio, che muove la frequenza quanto serve,
        * restava per tutta la sessione) */
       g.gl_eema += (fabs(e) - g.gl_eema) / 120.0;
-      if (++g.gl_good > 180 && g.gl_eema < 1000) {
+      if (++g.gl_good > 180 && g.gl_eema < 1000 + 0.1 * g.q) {
         g.gl_locked = true;
         printf("[genlock] agganciato: core a %.4f Hz, margine %.1f ms\n", g.Pm > 0 ? 1e6 / g.Pm : 0.0, g.q / 1000);
       }
@@ -868,6 +923,19 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
       else { target = e_next + 2 * P; hold_until = e_next + P + 200; }
     }
   }
+  /* il genlock: ogni immagine ha la sua presa (quella dopo v + D + margine). Arrivata
+   * prima della presa precedente (un'immagine piccola, o dopo una coda del Wi-Fi), sarebbe pronta un
+   * quadro prima e si scontrerebbe con la precedente (una scartata e una ripetuta): la si tiene fino
+   * a subito dopo la presa precedente. */
+  if (g.gl_state == 2 && g.fll_done && have_v) {
+    double tr = v_abs + g.D + g.q + 500;
+    double ei = e0 + ceil((tr - e0) / P) * P;
+    if (w < ei - P + 200 && ei - P + 200 - w < P)
+      hold_until = ei - P + 200;
+  }
+  double tr_e = g.gl_err, tr_tg = g.gl_target, tr_q = g.q, tr_D = g.D;
+  int tr_trim = g.gl_trim_sent;
+  bool tr_lk = g.gl_locked, tr_gl = g.gl_state == 2;
   pthread_mutex_unlock(&g.mx);
   if (gl_send != -1000) {
     pthread_mutex_lock(&ring_mx);
@@ -884,6 +952,10 @@ static void guard_wait(bool idr, uint64_t *held_us, uint32_t rtp) {
     }
     *held_us = (uint64_t)((double)now_us() - w);
   }
+  if (tr_gl)
+    tr_printf("F,%.0f,%llu,%u,%d,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%d,%llu,%.0f\n", w, (unsigned long long)du->receiveTimeUs,
+              rtp, du->fullLength, idr, have_v ? phv : -1.0, tr_e, tr_tg, tr_q, tr_D, tr_trim, tr_lk,
+              (unsigned long long)*held_us, v_abs);
   pthread_mutex_lock(&g.mx);
   if (g.npend == 4) {
     memmove(&g.pend[0], &g.pend[1], 3 * sizeof(g.pend[0]));
@@ -1383,7 +1455,7 @@ static int video_submit(PDECODE_UNIT du) {
   uint64_t held_us;
   bool forced = false;
   if (guard_on || genlock_req)               /* gli arrivi servono anche al solo genlock */
-    guard_wait(idr, &held_us, du->rtpTimestamp);
+    guard_wait(idr, &held_us, du);
   else
     pace_wait(&held_us, &forced);
   int rc = write_record(false, au_buf, (uint32_t)len, idr, VIDEO_WAIT_MS);
