@@ -219,7 +219,7 @@ static void mouse(int x, int y, int w, uint8_t b) {
 static void pad(int n, unsigned buttons, int lx, int ly) {
   pads[n] = buttons | ((uint64_t)(uint8_t)lx << 32) | ((uint64_t)(uint8_t)ly << 40);
 }
-static void poll(void) { publish(); mg_input_poll_once(2); }
+static void poll(void) { publish(); mg_input_poll_once(2); mg_core_tick(); }
 
 static volatile int quits, gones, refusals;
 static void on_quit(void) { quits++; }
@@ -384,6 +384,7 @@ int main(int argc, char **argv) {
 
   /* ---- stream ---- */
   printf("Stream\n");
+  mg_core_set_ritmo(true);
   mg_core_stream_begin();
   usleep(2000);
   CHECK("inizio stream: sessione nuova (flush), overlay spento", nsess == 2 &&

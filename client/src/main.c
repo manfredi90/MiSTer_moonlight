@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.2"
+#define MG_VERSION "0.1.3"
 
 static sem_t quit_sem;
 static volatile bool stop_play;
@@ -282,6 +282,7 @@ int mg_stream_session(PSERVER_DATA server, options *o, int app_id, char *msg, si
          sc.clientRefreshRateX100 / 100.0, sc.bitrate, ci.p240 ? "240p" : ci.interlaced ? "interlacciato" : "progressivo",
          ci.refresh_x100 / 100.0);
 
+  mg_core_set_ritmo(o->stats);
   mg_core_stream_begin();
   while (sem_trywait(&quit_sem) == 0) {} /* richieste vecchie */
   stop_play = false;

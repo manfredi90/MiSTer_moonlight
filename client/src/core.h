@@ -21,6 +21,10 @@ struct h264ring *mg_core_ring(void);
 /* Rilegge lo stato del core: battito (core scaricato?), OSD aperto, errori di
  * decodifica (chiede un IDR), sessione persa (la riapre). Ogni ~50 ms. */
 void mg_core_poll(void);
+/* Diagnostica del ritmo delle immagini (-stats): ogni ~2 ms durante lo stream, dal thread
+ * dell'input; stampa le immagini saltate/ripetute e ogni 10 s un riepilogo */
+void mg_core_set_ritmo(bool on);
+void mg_core_tick(void);
 bool mg_core_osd_open(void);
 
 /* Frequenza dei quadri del core e fps da chiedere a Sunshine (x100) */

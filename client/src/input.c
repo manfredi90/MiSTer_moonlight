@@ -600,6 +600,8 @@ static void *loop(void *arg) {
     unsigned ms = (unsigned)((t - last) * 1000 + 0.5);
     last = t;
     mg_input_poll_once(ms ? ms : 1);
+    if (mode == MG_INPUT_STREAM)
+      mg_core_tick();
     if (t - last_poll >= 0.05) {
       last_poll = t;
       mg_core_poll();
