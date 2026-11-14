@@ -450,16 +450,18 @@ static void *guard_thread(void *arg) {
         snap = h264ring_status(ring, &st) == 0;
       pthread_mutex_unlock(&ring_mx);
       pthread_mutex_lock(&g.mx);
+      /* il periodo atteso: col genlock il core allunga / accorcia i quadri di trim / 64 righe in media */
+      double Pe = g.P + (g.gl_state == 2 ? g.gl_trim_sent / 64.0 * g.gl_L : 0.0);
       if (!g.samples) {
         g.t_ref = s;
       } else {
-        double k = floor((s - g.t_ref) / g.P + 0.5);
-        double err = s - (g.t_ref + k * g.P);
+        double k = floor((s - g.t_ref) / Pe + 0.5);
+        double err = s - (g.t_ref + k * Pe);
         if (fabs(err) > 2500 && g.samples > 60) {
           if (++g.outliers > 30) g.samples = 0, g.outliers = 0;   /* persa: da capo */
         } else {
           g.outliers = 0;
-          g.t_ref += k * g.P + err * (g.samples < 60 ? 0.125 : 0.03);
+          g.t_ref += k * Pe + err * (g.samples < 60 ? 0.125 : 0.03);
         }
       }
       if (g.samples < 100000) g.samples++;
