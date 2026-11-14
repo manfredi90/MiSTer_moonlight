@@ -422,6 +422,10 @@ static struct {
   unsigned gl_n;
   /* la frequenza dei quadri del core, misurata sull'orologio dell'ARM (al secondo: min / max) */
   double r_t0, r_min, r_max;
+  /* la stima della frequenza del PC all'avvio del genlock (FLL) */
+  bool fll_done;
+  double fll_t0, fll_prev, fll_phu, fll_sx, fll_sy, fll_sxx, fll_sxy;
+  unsigned fll_n;
   unsigned r_n;
 } g = { .mx = PTHREAD_MUTEX_INITIALIZER };
 
@@ -583,6 +587,9 @@ static void guard_start(void) {
   g.gl_state = genlock_req ? 1 : 0;
   g.gl_t0 = (double)now_us();
   g.gl_pll_fail = false;
+  g.fll_done = false;
+  g.fll_t0 = g.fll_prev = g.fll_phu = g.fll_sx = g.fll_sy = g.fll_sxx = g.fll_sxy = 0;
+  g.fll_n = 0;
   gl_problem[0] = 0;
   g.gl_stuck_t0 = 0;
   g.gl_trim = g.gl_trim_sent = 0;
@@ -644,9 +651,9 @@ static void guard_wait(bool idr, uint64_t *held_us) {
    * quadro dopo. Anello PI: la parte proporzionale corregge l'errore in ~3 s, l'integrale (us a
    * quadro, al massimo 30) impara la differenza di frequenza col PC. GL_TRIM = la frequenza del PLL
    * video in 2^-16 (0,25 us a quadro; il core ci scivola, 25 unità al secondo, senza salti di riga).
-   * Guadagni scelti col modello (arrivi Wi-Fi sparsi di 3 ms, PC a 60,000 e a 59,94): la parte
-   * proporzionale toglie l'errore in ~7 s, l'integrale in ~1 minuto; più svelti, col ritardo dello
-   * scivolamento e la media degli arrivi, l'anello oscilla da un estremo all'altro. */
+   * Guadagni scelti col modello (arrivi Wi-Fi sparsi, PC a 60,000, 59,94, ±0,15 %), dopo la stima
+   * della frequenza qui sotto: proporzionale e/200 (~3 s), integrale 2e-6 (corregge la stima). Senza
+   * la stima, guadagni così svelti con il ritardo dello scivolamento farebbero oscillare l'anello. */
   int gl_send = -1000;
   if (g.gl_state == 3) {
     g.gl_state = 0;
@@ -655,16 +662,37 @@ static void guard_wait(bool idr, uint64_t *held_us) {
       snprintf(gl_problem, sizeof(gl_problem), "il core caricato non ha il genlock");
     printf("[genlock] %s: %s\n", gl_problem, guard_on ? "resta la guardia" : "nessuna sincronizzazione");
   }
-  if (g.gl_state == 2 && g.arrivals > 32) {
+  /* prima la frequenza (FLL): con il core al nominale, la pendenza della fase degli arrivi dice di
+   * quanto il PC è più lento o più veloce (us a quadro); dai 2,5 ai 6,5 s, dopo la raffica d'avvio
+   * di Sunshine. Il valore va nell'integrale e l'anello di fase parte già alla frequenza giusta
+   * (sul modello: aggancio in 10-25 s invece di 30-40 con un PC a 59,94). */
+  if (g.gl_state == 2 && g.arrivals > 32 && !g.fll_done) {
+    if (g.fll_n == 0 && !g.fll_t0) { g.fll_t0 = w; g.fll_prev = phi; g.fll_phu = 0; }
+    g.fll_phu += g_wrap(phi - g.fll_prev + P / 2, P) - P / 2;
+    g.fll_prev = phi;
+    double x = (w - g.fll_t0) / 1e6;
+    if (x > 2.5) {
+      g.fll_n++; g.fll_sx += x; g.fll_sy += g.fll_phu; g.fll_sxx += x * x; g.fll_sxy += x * g.fll_phu;
+    }
+    if (x > 6.5) {
+      double n = g.fll_n, den = n * g.fll_sxx - g.fll_sx * g.fll_sx;
+      double slope = den > 0 ? (n * g.fll_sxy - g.fll_sx * g.fll_sy) / den : 0;   /* us di fase al secondo */
+      g.gl_integ = slope * P / 1e6;                                               /* us a quadro */
+      if (g.gl_integ > 30) g.gl_integ = 30;
+      if (g.gl_integ < -30) g.gl_integ = -30;
+      g.fll_done = true;
+      printf("[genlock] frequenza del PC: %+.1f us a quadro rispetto al core (%.4f Hz)\n", g.gl_integ, 1e6 / (P + g.gl_integ));
+    }
+  } else if (g.gl_state == 2 && g.arrivals > 32) {
     double m = 3 * g.mad + 700;
     double tg = P - g.D - m;
     if (tg < 300) tg += P;
     tg = g_wrap(tg, P);
     double e = g_wrap(phi - tg + P / 2, P) - P / 2;
-    g.gl_integ += e * 4e-6;
+    g.gl_integ += e * 2e-6;
     if (g.gl_integ > 30) g.gl_integ = 30;
     if (g.gl_integ < -30) g.gl_integ = -30;
-    double corr = e / 450.0 + g.gl_integ;     /* us a quadro */
+    double corr = e / 200.0 + g.gl_integ;     /* us a quadro */
     int trim = (int)lround(corr * 65536.0 / P);
     if (trim > 127) trim = 127;
     if (trim < -127) trim = -127;
