@@ -6,8 +6,9 @@ Client Moonlight per Sunshine sul MiSTer, con uscita sul core H264 (decoder H.26
 
 1. Copia sulla SD (in `/media/fat`) le cartelle `Scripts` e `MiSTer_moonlight` dello zip,
    e il core H264 in `_Other` (`H264_*.rbf`).
-2. Lancia una volta **Scripts → mister_moonlight**: crea `MiSTer_moonlight/mister_moonlight.conf`.
-   Mettici l'indirizzo del PC con Sunshine (`HOST=...`) e rilancia.
+2. Lancia **Scripts → mister_moonlight**: si apre l'elenco dei PC. Scegli *+ Aggiungi PC* e
+   scrivi l'indirizzo IP del PC con Sunshine (tastiera a schermo col pad, o una tastiera vera),
+   poi un nome. Se in `mister_moonlight.conf` c'è `HOST=...`, quel PC entra nell'elenco da solo.
 3. Se in `/media/fat/moonlight-groovy/keys` c'è già un abbinamento, viene riusato; se no il
    menu mostra un PIN da inserire nella pagina web di Sunshine (scheda PIN).
 
@@ -16,7 +17,11 @@ riscritto sull'ARM, che regge solo bitrate bassi.
 
 ## Comandi
 
-- Menu: croce o frecce; A, Invio o Start conferma; B o Esc indietro (dalla lista: esce).
+- Menu: croce o frecce; A, Invio o Start conferma; B o Esc indietro (dall'elenco dei PC: esce).
+- Elenco dei PC: A si collega, destra apre le opzioni del PC (rinomina, cambia indirizzo,
+  rimuovi). Dalle app, B torna all'elenco dei PC.
+- Tastiera a schermo (indirizzo e nome del PC): A scrive il tasto scelto, Start o Invio
+  conferma, B o Esc annulla; con una tastiera vera si scrive direttamente.
 - Tornare al menu durante lo stream: Select+Start+LB+RB, Ctrl+Alt+Shift+Q, oppure
   *Program menu* nell'OSD del MiSTer.
 - Tasto Guide: Select+Start, oppure *Send Home to the program* nell'OSD.
@@ -26,7 +31,7 @@ riscritto sull'ARM, che regge solo bitrate bassi.
 ## Impostazioni
 
 Nel menu: bitrate (automatico = 10 Mbps), audio, chiusura dell'app all'uscita. Le scelte
-restano in `MiSTer_moonlight/menu.cfg`. Lo stream è sempre 640x480 a 60 immagini al secondo
+restano in `MiSTer_moonlight/menu.cfg`, con l'elenco dei PC. Lo stream è sempre 640x480 a 60 immagini al secondo
 (quanto il core mostra 1:1); da riga di comando `-width`, `-height` e `-fps` restano per le prove.
 
 Sul PC conviene una modalità video a **60,000 Hz esatti**: la 640x480 "60 Hz" standard è in realtà

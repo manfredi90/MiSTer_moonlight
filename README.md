@@ -23,9 +23,11 @@ mode (480i, 480p, 240p) runs at exactly 60.000 Hz; the stock H264 core (480i at 
 ## Install
 
 Copy the release zip's folders to the root of the SD card (`/media/fat`), together with the
-H264 core (`_Other/H264_*.rbf`). Set `HOST` (the PC running Sunshine) in
-`MiSTer_moonlight/mister_moonlight.conf` (created from `.conf.esempio` on the first run), then
-run **Scripts → mister_moonlight**.
+H264 core (`_Other/H264_*.rbf`), then run **Scripts → mister_moonlight**: the menu opens on
+the list of PCs, where *+ Aggiungi PC* takes the Sunshine PC's IP address (on-screen keyboard
+or a real one); PCs can be renamed, re-addressed or removed there. `HOST` in
+`MiSTer_moonlight/mister_moonlight.conf` (created from `.conf.esempio` on the first run) is
+added to the list the first time, and is required only with `MENU=0`.
 
 In Sunshine, leave **CAVLC** off: the core decodes CABAC; a CAVLC stream is rewritten on the
 ARM, which only keeps up at low bitrates.

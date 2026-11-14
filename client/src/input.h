@@ -5,7 +5,10 @@
 
 /* In stream i comandi vanno a Sunshine, nel menu diventano tasti di navigazione */
 enum { MG_INPUT_STREAM = 0, MG_INPUT_MENU = 1 };
-enum { MG_KEY_NONE = 0, MG_KEY_UP, MG_KEY_DOWN, MG_KEY_LEFT, MG_KEY_RIGHT, MG_KEY_OK, MG_KEY_BACK };
+enum { MG_KEY_NONE = 0, MG_KEY_UP, MG_KEY_DOWN, MG_KEY_LEFT, MG_KEY_RIGHT, MG_KEY_OK, MG_KEY_BACK,
+       MG_KEY_DEL,              /* Backspace della tastiera (fuori dai campi di testo vale come BACK) */
+       MG_KEY_ENTER,            /* Invio della tastiera, Start del pad: come OK, ma nei campi di testo conferma */
+       MG_KEY_CHAR = 0x100 };   /* + un carattere ASCII scritto con la tastiera */
 
 /* Legge pad, tastiera e mouse che il Main passa al core H264 (il core li copia
  * nel suo blocco di controllo: il Main tiene per sé /dev/input). on_quit: la

@@ -298,23 +298,55 @@ static void key_stream(unsigned ext, unsigned code, bool pressed) {
   }
 }
 
+/* Il carattere di un tasto (codice Linux) per i campi di testo del menu, tastiera US / italiana
+ * (lettere, cifre, punto, trattino, spazio; anche il tastierino); 0 se non serve */
+static int key_char(unsigned lk, bool shift) {
+  static const char row1[] = "1234567890";        /* KEY_1 (2) .. KEY_0 (11) */
+  static const char row2[] = "qwertyuiop";        /* KEY_Q (16) .. KEY_P (25) */
+  static const char row3[] = "asdfghjkl";         /* KEY_A (30) .. KEY_L (38) */
+  static const char row4[] = "zxcvbnm";           /* KEY_Z (44) .. KEY_M (50) */
+  int c = 0;
+  if (lk >= 2 && lk <= 11) c = row1[lk - 2];
+  else if (lk >= 16 && lk <= 25) c = row2[lk - 16];
+  else if (lk >= 30 && lk <= 38) c = row3[lk - 30];
+  else if (lk >= 44 && lk <= 50) c = row4[lk - 44];
+  else if (lk == 52 || lk == 83 || lk == 51) c = '.';     /* punto, punto del tastierino, virgola */
+  else if (lk == 12 || lk == 74 || lk == 53) c = shift ? '_' : '-';
+  else if (lk == 57) c = ' ';
+  else if (lk >= 71 && lk <= 73) c = "789"[lk - 71];
+  else if (lk >= 75 && lk <= 77) c = "456"[lk - 75];
+  else if (lk >= 79 && lk <= 81) c = "123"[lk - 79];
+  else if (lk == 82) c = '0';
+  if (shift && c >= 'a' && c <= 'z') c -= 'a' - 'A';
+  return c;
+}
+
+static bool menu_shift_l, menu_shift_r;
+
 static void key_menu(unsigned ext, unsigned code, bool pressed) {
+  unsigned lk = lin_key(ext, code);
+  if (lk == 42) { menu_shift_l = pressed; return; }
+  if (lk == 54) { menu_shift_r = pressed; return; }
   if (!pressed)
     return;
   if (ext) {
     switch (code) {
-    case 0x75: push_key(MG_KEY_UP); break;
-    case 0x72: push_key(MG_KEY_DOWN); break;
-    case 0x6B: push_key(MG_KEY_LEFT); break;
-    case 0x74: push_key(MG_KEY_RIGHT); break;
-    case 0x5A: push_key(MG_KEY_OK); break;
+    case 0x75: push_key(MG_KEY_UP); return;
+    case 0x72: push_key(MG_KEY_DOWN); return;
+    case 0x6B: push_key(MG_KEY_LEFT); return;
+    case 0x74: push_key(MG_KEY_RIGHT); return;
+    case 0x5A: push_key(MG_KEY_ENTER); return;
     }
   } else {
     switch (code) {
-    case 0x5A: case 0x29: push_key(MG_KEY_OK); break;
-    case 0x76: case 0x66: push_key(MG_KEY_BACK); break;
+    case 0x5A: push_key(MG_KEY_ENTER); return;
+    case 0x76: push_key(MG_KEY_BACK); return;
+    case 0x66: push_key(MG_KEY_DEL); return;
     }
   }
+  int c = key_char(lk, menu_shift_l || menu_shift_r);
+  if (c)
+    push_key(MG_KEY_CHAR + c);
 }
 
 /* ---------- modalità mouse ---------- */
@@ -458,7 +490,8 @@ static void pads_menu(void) {
   if (pressed & P_DOWN) push_key(MG_KEY_DOWN);
   if (pressed & P_LEFT) push_key(MG_KEY_LEFT);
   if (pressed & P_RIGHT) push_key(MG_KEY_RIGHT);
-  if (pressed & (H264RING_PAD_A | H264RING_PAD_START)) push_key(MG_KEY_OK);
+  if (pressed & H264RING_PAD_A) push_key(MG_KEY_OK);
+  if (pressed & H264RING_PAD_START) push_key(MG_KEY_ENTER);
   if (pressed & H264RING_PAD_B) push_key(MG_KEY_BACK);
   int dir = (j & P_UP) ? MG_KEY_UP : (j & P_DOWN) ? MG_KEY_DOWN : (j & P_LEFT) ? MG_KEY_LEFT :
             (j & P_RIGHT) ? MG_KEY_RIGHT : 0;
