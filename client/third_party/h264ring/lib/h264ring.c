@@ -862,6 +862,18 @@ int h264ring_set_atten(h264ring *r, unsigned half_db)
     return 0;
 }
 
+/* (MiSTer Moonlight, interface mm 1.5) the genlock: word 34's GL_EN [24] and GL_TRIM [23:16] (lines
+ * per 64 refreshes, signed). A core without it refuses the whole word (CTL_ERR): clear it again with
+ * en = 0. Kept in r->ctl, so a new session re-writes it like the pause and the volume. */
+int h264ring_set_genlock(h264ring *r, int en, int trim)
+{
+    if (!r || trim < -64 || trim > 64)
+        return -EINVAL;
+    r->ctl = (r->ctl & ~(0x1FFu << 16)) | (en ? ((1u << 24) | (((uint32_t)trim & 0xFFu) << 16)) : 0u);
+    ctrl_lo_store(r, H264RING_W_PAUSE, r->ctl);
+    return 0;
+}
+
 /* ---- the rumble (interface 0.13, program words 36-38: two pads a u32, {large, small}) ---- */
 static void rum_write(h264ring *r, unsigned pad, uint16_t v)
 {

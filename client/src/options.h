@@ -26,6 +26,7 @@ typedef struct {
   bool no_menu_cfg;
   bool pacing;
   bool guard;
+  bool genlock;
   const char *core_rbf;
 } options;
 

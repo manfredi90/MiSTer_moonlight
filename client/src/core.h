@@ -30,6 +30,8 @@ void mg_core_set_ritmo(bool on);
 void mg_core_set_pacing(bool on);
 /* La guardia di fase (core con la P3e): un'immagine che cadrebbe a ridosso della presa va alla successiva */
 void mg_core_set_guard(bool on);
+/* Il genlock (core di questo repository, interfaccia mm 1.5): la fase del core segue gli arrivi */
+void mg_core_set_genlock(bool on);
 void mg_core_tick(void);
 bool mg_core_osd_open(void);
 

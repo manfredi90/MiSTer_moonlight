@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.7"
+#define MG_VERSION "0.1.8"
 
 static sem_t quit_sem;
 static volatile bool stop_play;
@@ -152,6 +152,7 @@ static void usage(void) {
   printf("  -nomenucfg         il menu non legge menu.cfg\n");
   printf("  -pacing            un'immagine al core solo dopo la presa della precedente (sperimentale)\n");
   printf("  -guard             guardia di fase: col core con la P3e, nessuna immagine a ridosso della presa\n");
+  printf("  -genlock           genlock: il core accorda la sua fase agli arrivi (core di questo repository)\n");
   printf("  -core PERCORSO     il core da caricare, senza data ed estensione (predefinito _Other/H264)\n\n");
   printf("Durante lo stream: Select+Start+LB+RB o Ctrl+Alt+Shift+Q tornano al menu,\n");
   printf("Select+Start = tasto Guide, Start tenuto 1 s = modalita' mouse.\n");
@@ -209,6 +210,7 @@ static int parse(int argc, char **argv, options *o) {
     else if (!strcmp(a, "-nomenucfg")) o->no_menu_cfg = true;
     else if (!strcmp(a, "-pacing")) o->pacing = true;
     else if (!strcmp(a, "-guard")) o->guard = true;
+    else if (!strcmp(a, "-genlock")) o->genlock = true;
     else if (!strcmp(a, "-core")) { NEEDV(); o->core_rbf = v; }
     else { fprintf(stderr, "Opzione sconosciuta: %s\n", a); return -1; }
   }
@@ -291,6 +293,7 @@ int mg_stream_session(PSERVER_DATA server, options *o, int app_id, char *msg, si
   mg_core_set_ritmo(o->stats);
   mg_core_set_pacing(o->pacing);
   mg_core_set_guard(o->guard);
+  mg_core_set_genlock(o->genlock);
   mg_core_stream_begin();
   while (sem_trywait(&quit_sem) == 0) {} /* richieste vecchie */
   stop_play = false;
