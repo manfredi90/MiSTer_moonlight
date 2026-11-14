@@ -15,8 +15,8 @@ Changes here:
   for every mode; the fit (`h264/disp_fit.sv`) works on square pixels; the composite sync
   (`h264/csync_smpte.sv`) keeps the SMPTE pulse widths on the new line.
 - **No 50 Hz, no 59.94 Hz, no native HDMI raster, no refresh matching, no film speed.** Output Mode
-  is 480i or 480p; 240p Playback switches a playing stream to 240p. HDMI still gets the picture
-  through the MiSTer scaler.
+  is 15kHz (480i) or 31kHz (480p); at 15kHz, 15kHz Mode 240p (upstream's 240p Playback) switches a
+  playing stream to 240p. HDMI still gets the picture through the MiSTer scaler.
 - The core is named H264 (`_Other/H264_*.rbf`), the pad's J line is upstream's twelve
   Xbox-style buttons (the input region carries them as they are), the OSD's *Send Home to the
   program* and *Program menu* entries are back, `CORE_VERSION` is `mm-<version>`.

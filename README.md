@@ -6,8 +6,8 @@ that runs on the MiSTer FPGA's ARM and plays the stream through the
 It is aimed at CRTs. With the core in `core/` the picture is 640 square pixels wide and every
 mode (480i, 480p, 240p) runs at exactly 60.000 Hz; the stock H264 core (480i at 59.94 Hz) works too.
 
-- On-screen menu (drawn in the core's overlay plane): Sunshine's apps, resolution, bitrate,
-  frame rate, audio, pairing with an on-screen PIN.
+- On-screen menu (drawn in the core's overlay plane): Sunshine's apps, bitrate, audio, pairing
+  with an on-screen PIN. The stream is always 640x480 at 60 fps.
 - Pads, keyboard and mouse through the core (Main keeps `/dev/input` while a core runs),
   rumble on the MiSTer's pads, mouse mode on the pad.
 - Sunshine is asked for the core's own frame rate (59.94 fps on a 59.94 Hz raster), so the
