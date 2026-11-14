@@ -35,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define MG_VERSION "0.1.4"
+#define MG_VERSION "0.1.5"
 
 static sem_t quit_sem;
 static volatile bool stop_play;
@@ -150,7 +150,7 @@ static void usage(void) {
   printf("  -stickdpad         lascia passare le direzioni digitali che il MiSTer ricava dalla levetta\n");
   printf("  -debuginput        stampa gli input inoltrati al PC\n");
   printf("  -nomenucfg         il menu non legge menu.cfg\n");
-  printf("  -nopacing          immagini al core appena arrivano (senza aspettare la presa della precedente)\n\n");
+  printf("  -pacing            un'immagine al core solo dopo la presa della precedente (sperimentale)\n\n");
   printf("Durante lo stream: Select+Start+LB+RB o Ctrl+Alt+Shift+Q tornano al menu,\n");
   printf("Select+Start = tasto Guide, Start tenuto 1 s = modalita' mouse.\n");
 }
@@ -205,7 +205,7 @@ static int parse(int argc, char **argv, options *o) {
     else if (!strcmp(a, "-debuginput")) o->debug_input = true;
     else if (!strcmp(a, "-stickdpad")) o->stick_dpad = true;
     else if (!strcmp(a, "-nomenucfg")) o->no_menu_cfg = true;
-    else if (!strcmp(a, "-nopacing")) o->no_pacing = true;
+    else if (!strcmp(a, "-pacing")) o->pacing = true;
     else { fprintf(stderr, "Opzione sconosciuta: %s\n", a); return -1; }
   }
   if (o->width < 64 || o->height < 64 || o->width > 1920 || o->height > 1088) {
@@ -285,7 +285,7 @@ int mg_stream_session(PSERVER_DATA server, options *o, int app_id, char *msg, si
          ci.refresh_x100 / 100.0);
 
   mg_core_set_ritmo(o->stats);
-  mg_core_set_pacing(!o->no_pacing);
+  mg_core_set_pacing(o->pacing);
   mg_core_stream_begin();
   while (sem_trywait(&quit_sem) == 0) {} /* richieste vecchie */
   stop_play = false;

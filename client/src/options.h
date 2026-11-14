@@ -24,7 +24,7 @@ typedef struct {
   int cpu;
   int pin;
   bool no_menu_cfg;
-  bool no_pacing;
+  bool pacing;
 } options;
 
 /* Sessione di streaming col core già collegato. Ritorna 0 se lo stream è

@@ -12,5 +12,4 @@ MENU=1
 APP="Desktop"
 
 # Opzioni aggiuntive, per esempio: -width 640 -height 480 -bitrate 10000 -fps 30 -pads 2 -quitappafter
-# (-nopacing: immagini al core appena arrivano, come fino alla 0.1.3)
 EXTRA="-stats"

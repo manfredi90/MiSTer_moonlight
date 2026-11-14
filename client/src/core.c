@@ -81,6 +81,10 @@ static mg_core_counters n;
  * dopo: un quadro ripetuto e poi un'immagine scartata, a raffiche, ogni volta che il ritmo del PC
  * (59,95 per esempio) porta gli arrivi su quel punto.
  *
+ * NOTA (0.1.5): il core chiude un'immagine solo quando arriva l'inizio della successiva (la chiusura
+ * a fine record, "P3e", non c'è ancora): finché è così il passo non può funzionare (aspetterebbe la
+ * presa di un'immagine che si completa solo scrivendo la successiva) ed è spento in modo predefinito.
+ *
  * Il passo (pacing): al core si scrive un'immagine solo quando la precedente è già stata presa (o
  * scartata). Dopo un arrivo in ritardo (un quadro ripetuto) le immagini seguenti vengono scritte
  * subito dopo ogni presa, con un quadro intero per decodificarle: niente più raffiche, solo la
@@ -90,7 +94,7 @@ static mg_core_counters n;
  * Con -stats: ogni immagine saltata / ripetuta all'istante, e ogni 10 s un riepilogo. */
 #define RITMO_PERIOD_S 10
 #define PACE_MAX_MS    50
-static bool pacing = true;
+static bool pacing = false;
 static struct {
   bool on;
   uint32_t pick_last, skip_last, starve_last;
