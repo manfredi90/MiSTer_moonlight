@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """ring_layout.py -- the HPS interface's layout, written down once (docs/architecture.md
-"The HPS interface"). Interface version 1.4 (1.0 FROZEN, roadmap Phase 7; 1.2 adds playback geometry, 1.3 adds display policy status, 1.4 reserves display policy extension bits after restoring 50/60 refresh matching). Nothing published
+"The HPS interface"). Interface version 1.4 (1.0 FROZEN, roadmap Phase 7; 1.2 adds playback geometry, 1.3 adds display policy status, 1.4 reserves display policy extension bits after restoring 50/60 refresh matching; mm 1.5 adds the genlock to word 34 and its status to word 45). Nothing published
 here moves or changes its meaning within 1.x; a minor version only adds (a field in bits
 that read 0, a word that read 0, a record type that was refused), and 0 must keep meaning
 what it meant. Any change here is an interface change -- bump VERSION, update the
@@ -51,7 +51,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-VERSION_MAJOR, VERSION_MINOR = 1, 4    # preserve the published 1.4 interface; retired extension bits remain reserved
+VERSION_MAJOR, VERSION_MINOR = 1, 5    # preserve the published 1.4 interface; retired extension bits remain reserved
                                        # 1.2 (2026-10-16, calibrated playback geometry: program word 39 + clip word 88)
                                        # 1.1 (2026-10-10, behaviour only, the layout unchanged): a late
                                        # picture never runs the clock back over queued audio that leads it
@@ -143,7 +143,9 @@ CONSTS = [
     ("W_PAUSE", PROG_WORD + 2, 8, "program (0.5): the pause and attenuation (u32, low half: [0] PAUSE, [15:8] ATTEN, the rest 0)"),
     ("CTL_PAUSE_BIT", 0, 8, "pause word: the PAUSE level"),
     ("CTL_ATTEN_LSB", 8, 8, "pause word: ATTEN [15:8], 0.5 dB steps (0 full volume, 255 mute)"),
-    ("CTL_RESERVED", 0xFFFF00FE, 32, "pause word: the bits that must be 0 (a word with one set is refused whole)"),
+    ("CTL_GL_TRIM_LSB", 16, 8, "(mm 1.5) pause word: GL_TRIM [23:16], signed: lines added (+) or removed (-) per 64 refreshes while GL_EN"),
+    ("CTL_GL_EN_BIT", 24, 8, "(mm 1.5) pause word: GL_EN, the genlock: the raster's length follows GL_TRIM (during a session)"),
+    ("CTL_RESERVED", 0xFE0000FE, 32, "pause word: the bits that must be 0 (a word with one set is refused whole)"),
     ("W_SETTINGS", PROG_WORD + 3, 8, "program (0.4): the settings request (u32, low half: values, mask, seq)"),
     ("REQ_MASK_LSB", 13, 8, "settings request: the mask's first bit (one bit an option, in the mirror's order)"),
     ("REQ_SEQ_LSB", 24, 8, "settings request: the sequence number [31:24] (0 = no request)"),
@@ -371,7 +373,9 @@ WORDS = [
                  ("aud_hold_bytes", 32, 32, "(0.5) ring bytes the queued audio holds behind the reader")]),
     (45, "sys", [("paused", 0, 1, "(0.5) the pause is applied (word 34's PAUSE, during a session)"),
                  ("ctl_err", 1, 1, "(0.5) the last word 34 read had a reserved bit set: refused, the previous values kept"),
-                 ("atten", 8, 8, "(0.5) the attenuation applied (word 34's ATTEN)")]),
+                 ("atten", 8, 8, "(0.5) the attenuation applied (word 34's ATTEN)"),
+                 ("gl_trim", 16, 8, "(mm 1.5) the genlock trim applied (word 34's GL_TRIM; 0 without GL_EN)"),
+                 ("gl_en", 24, 1, "(mm 1.5) the genlock is applied (word 34's GL_EN, during a session)")]),
     # 0.9: the overlay plane's status (docs/architecture.md "The overlay plane")
     (46, "sys", [("ovl_gen", 0, 32, "(0.9) the overlay: the generation of the last consistent descriptor read"),
                  ("ovl_state", 32, 2, "(0.9) 0 off, 1 accepted (shown while a session is open), 2 refused"),

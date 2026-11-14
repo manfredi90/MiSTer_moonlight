@@ -13,6 +13,19 @@
 // accepted and ignored (mode_std reports 1, 60.00 Hz). The history below describes the original
 // 720-dot raster.
 //
+// THE GENLOCK (mm, interface 1.5: word 34's GL_EN / GL_TRIM): while gl_en, a refresh may have one
+// line more or one less, decided once a refresh by a sigma-delta on gl_trim (lines per 64
+// refreshes, signed: +64 a line more every refresh, -64 one less). The line is the second blank line
+// of the refresh (field line 241 at 480i and 240p, line 481 at 480p): repeated (v_cnt held one more
+// line) or skipped (v_cnt +2). It lies after the first blank line (the overlay's vb_first) and
+// before the vertical sync and its equalizing block (csync_smpte: 241 is the block's first
+// pre-equalizing line, so a repeat lengthens the pre-equalizing segment by a line and a skip
+// shortens it), so the picture keeps its place under the vertical sync and the horizontal timing
+// never changes: only that refresh is 1 line (0.38 % at 15 kHz, 0.19 % at 31 kHz) longer or
+// shorter. The program steers the refresh's phase to its pictures' arrivals with it (disp_ctl
+// re-anchors its grid at every refresh while gl_en). Off (and the accumulator cleared) without
+// gl_en, and at a mode change: then the raster is exactly the 60.000 Hz one below.
+//
 // Inherited verbatim from MiSTer_UMD_Video (umd/sync_gen.sv). It keeps MiSTer_DVD's
 // syncgen coordinate convention, which every overlay and display module harvested from
 // those projects consumes:
@@ -96,6 +109,8 @@ module sync_gen (
     input  wire        interlaced,   // 1 = the 480i / 576i raster (pixel repetition, fields)
     input  wire        prog240,      // 1 = fixed-frame 240p/288p raster (pixel repetition)
     input  wire  [1:0] std,          // 0 = 59.94 Hz, 1 = 60.00 Hz (525 lines), 2 = 50 Hz (625 lines); 3 = 0
+    input  wire        gl_en,        // (mm 1.5) the genlock (quasi-static)
+    input  wire  [7:0] gl_trim,      // ... lines per 64 refreshes, signed
     // the native raster (h264/raster_geom.sv; taken at a frame's first dot, progressive only)
     input  wire        nat,
     input  wire [11:0] g_w,
@@ -151,6 +166,8 @@ reg        p240_q;
 reg        nat_q;   // the native geometry the counters run (taken at a frame's first dot)
 reg [11:0] gw_q, gh_q, gl_q, gnt_q, glast_q;
 reg        nat_go;  // the native frame has begun on a tick (every clock a dot from then)
+reg signed [8:0] gl_acc;                                 // (mm 1.5) the genlock's sigma-delta
+reg        gl_done;                                      // ... this refresh's line decided
 assign dot = clk_en | (nat_q & nat_go);
 always @(posedge clk or negedge rst_n)
     if (!rst_n)       nat_go <= 1'b0;
@@ -178,6 +195,14 @@ wire        v_last = il_q ? (v_cnt == (field1 ? iv_short - 12'd1 : iv_short)) : 
                      nat_q ? (v_cnt == gnt_q - 12'd1) : (v_cnt == v_tot - 12'd1);
 wire        nat_in = 1'b0;                              // no native raster
 wire        mode_chg = (interlaced != il_q) || (p240_req != p240_q);
+// (mm 1.5) the genlock's line and decision (made at that line's last dot)
+wire        gl_on   = (gl_en === 1'b1);                  // (benches that omit the port: off)
+wire [11:0] gl_line = (il_q | p240_q) ? 12'd241 : 12'd481;
+wire signed [7:0] gl_t  = $signed(gl_trim) > 8'sd64 ? 8'sd64 : $signed(gl_trim) < -8'sd64 ? -8'sd64 : $signed(gl_trim);
+wire signed [8:0] gl_sum = gl_acc + {gl_t[7], gl_t};    // |gl_acc| < 64 after every decision
+wire        gl_at   = gl_on && !gl_done && (v_cnt == gl_line);
+wire        gl_rep  = gl_at && (gl_sum >= 9'sd64);       // repeat the line: one more
+wire        gl_skip = gl_at && (gl_sum <= -9'sd64);      // skip the next: one less
 
 always @(posedge clk or negedge rst_n) begin
     if (!rst_n) begin
@@ -189,8 +214,10 @@ always @(posedge clk or negedge rst_n) begin
         odd_field <= 1'b1;
         m7 <= 3'd0;
         nat_q <= 1'b0; gw_q <= '0; gh_q <= '0; gl_q <= '0; gnt_q <= '0; glast_q <= '0;
+        gl_acc <= 9'sd0; gl_done <= 1'b0;
     end else if (dot) begin
         if (mode_chg) begin
+            gl_acc <= 9'sd0; gl_done <= 1'b0;
             // a clean restart in the new mode, at the top field's first dot
             il_q <= interlaced;
             p240_q <= p240_req;
@@ -203,7 +230,14 @@ always @(posedge clk or negedge rst_n) begin
         end else begin
             h_cnt <= h_last ? 12'd0 : h_cnt + 12'd1;
             if (h_last) begin
-                v_cnt <= v_last ? 12'd0 : v_cnt + 12'd1;
+                v_cnt <= v_last ? 12'd0 : gl_rep ? v_cnt : gl_skip ? v_cnt + 12'd2 : v_cnt + 12'd1;
+                // (mm 1.5) the genlock: one decision a refresh, at its line
+                if (v_last) gl_done <= 1'b0;
+                else if (gl_at) begin
+                    gl_done <= 1'b1;
+                    gl_acc <= gl_rep ? gl_sum - 9'sd64 : gl_skip ? gl_sum + 9'sd64 : gl_sum;
+                end
+                if (!gl_on) gl_acc <= 9'sd0;
                 // the native geometry, taken only where a frame begins (progressive: never mid-frame)
                 if (v_last && !il_q) begin
                     nat_q <= nat_in; gw_q <= g_w; gh_q <= g_h; gl_q <= g_l; gnt_q <= g_nt; glast_q <= g_last;

@@ -173,7 +173,7 @@ assign LOCKED    = locked & vid_locked;
 //     stock Main truncates the About line at 30 chars and splits CONF_STR on , and ;.
 //   * This string is INSIDE CONF_STR = inside the netlist, so changing it re-rolls the
 //     fit. Set it before the build that will ship, not after.
-`define CORE_VERSION "mm-0.2.1-p3e"
+`define CORE_VERSION "mm-0.3.0-genlock"
 
 // The OSD definition. Every option, button and file extension here MUST be documented
 // in the manual: tools/docs_check.py parses this block (by its terminator, never a
@@ -383,6 +383,8 @@ wire [127:0] rr_geom_data;          // interface 1.2: {clip viewport word 88, pi
 wire [7:0] rr_geom_ack_seq;
 wire [1:0] rr_geom_error;
 wire        v_clip_en;
+wire        v_gl_en;                 // (mm 1.5) the genlock on clk_vid (sync_gen)
+wire  [7:0] v_gl_trim;
 wire [11:0] v_clip_x, v_clip_y, v_clip_w, v_clip_h;
 wire [32:0] rr_pts;
 wire        disp_ended;                   // disp_ctl: the display took the stream's END
@@ -401,6 +403,8 @@ wire  [3:0] af_n;
 wire [63:0] af_dout;
 wire        ctl_pause, ctl_err;          // word 34 as applied (the pause during a session)
 wire  [7:0] ctl_atten;
+wire        ctl_gl_en;                   // (mm 1.5) the genlock (word 34's GL_EN, during a session)
+wire  [7:0] ctl_gl_trim;                 // ... its trim: lines per 64 refreshes, signed
 wire        rr_sess, rr_eos_seen;
 wire  [7:0] rr_state, rr_err;
 wire [31:0] rr_err_pos;
@@ -456,6 +460,8 @@ ring_rd ring_rd_inst (
 	.ctl_pause      (ctl_pause),            // 0.5: program word 34
 	.ctl_err        (ctl_err),
 	.ctl_atten      (ctl_atten),
+	.ctl_gl_en      (ctl_gl_en),            // (mm 1.5) word 34's genlock
+	.ctl_gl_trim    (ctl_gl_trim),
 	.rumble         (rumble),               // 0.13: program words 36-38, into hps_io
 	.rum_changes    (rum_changes),
 	.st_word        (st_word),
@@ -685,6 +691,8 @@ sync_gen sync_gen_inst (
 	.interlaced (v_il),
 	.prog240    (v_prog240),
 	.std        (v_std),              // P6 steps 5 / 6: 59.94 / 60.00 / 50 Hz (Refresh Rate, below)
+	.gl_en      (v_gl_en),            // (mm 1.5) the genlock: a front-porch line more / less
+	.gl_trim    (v_gl_trim),
 	.nat        (v_nat),              // stage 2: the native raster, taken at a frame's first dot
 	.g_w        (v_rw),
 	.g_h        (v_rh),
@@ -1127,6 +1135,8 @@ disp_ctl disp_ctl_inst (
 	.clk            (clk_sys),
 	.rst_n          (fe_rst_n),
 	.frame0         (frame0_sys),             // (hd_raster) the raster's frame start, crossed from clk_vid
+	.frame          (frame_sys),              // (mm 1.5) every refresh's start: the grid re-anchors there under the genlock
+	.gl_en          (ctl_gl_en),
 	.il             (raster_il_eff),          // P6: a refresh is a field only on an interlaced raster
 	.prog240        (prog240_eff),
 	.std            (raster_std),             // P6 steps 5 / 6: the refresh grid (59.94 / 60.00 / 50 Hz)
@@ -1593,14 +1603,15 @@ assign raster_pal     = raster_std[1];
 // at a frame's first dot, the deinterlace mode / the overlay's settings at a refresh's first line --
 // all long after the copy has settled.
 localparam int XW_DN = 1 + 1 + 1 + 2 + 1 + 5*12 + 1 + 5 + 1 + 8 + 8 + 1 + 1 + 2 + 3 +
-                       13 + 13 + 14 + 14 + 28 + 28 + 2 + 2 + 12 + 12 + 12 + 12 + 3 + 3 + 1 + 1 + 1 + 6 + 1 + 4*12;
+                       13 + 13 + 14 + 14 + 28 + 28 + 2 + 2 + 12 + 12 + 12 + 12 + 3 + 3 + 1 + 1 + 1 + 6 + 1 + 4*12 + 1 + 8;
 wire [XW_DN-1:0] xdn_src = {raster_il_eff, prog240_eff, raster_pal, raster_std,
                             geom_nat, geom_rw, geom_rh, geom_l, geom_nt, geom_last,
                             sh_valid, sh_store, sh_field, sh_w, sh_hf, sh_parity, sh_single, 2'b00 /* Weave: no Deinterlace entry */, sh_colour,
                             fit_ow, fit_oh, fit_ox0, fit_oy0, fit_sx, fit_sy, fit_dh_l2, fit_dv_l2,
                             fit_lx, fit_ty, fit_wc, fit_hc, fit_hpf, fit_vpf,
                             rr_sess, at_sel, idle_vis, sh_siting,
-                            fit_clip_en, fit_clip_x, fit_clip_y, fit_clip_w, fit_clip_h};
+                            fit_clip_en, fit_clip_x, fit_clip_y, fit_clip_w, fit_clip_h,
+                            ctl_gl_en, ctl_gl_trim};
 wire [XW_DN-1:0] xdn_dst;
 assign {v_il, v_prog240, v_pal, v_std,
         v_nat, v_rw, v_rh, v_l, v_nt, v_last,
@@ -1608,7 +1619,8 @@ assign {v_il, v_prog240, v_pal, v_std,
         v_fit_ow, v_fit_oh, v_fit_ox0, v_fit_oy0, v_fit_sx, v_fit_sy, v_fit_dh_l2, v_fit_dv_l2,
         v_fit_lx, v_fit_ty, v_fit_wc, v_fit_hc, v_fit_hpf, v_fit_vpf,
         v_sess, v_at_en, v_idle_vis, v_siting,
-        v_clip_en, v_clip_x, v_clip_y, v_clip_w, v_clip_h} = xdn_dst;
+        v_clip_en, v_clip_x, v_clip_y, v_clip_w, v_clip_h,
+        v_gl_en, v_gl_trim} = xdn_dst;
 cdc_snap #(.W(XW_DN)) raster_dn_xing (
 	.src_clk   (clk_sys),
 	.src_rst_n (lock_sys_n),
@@ -1986,6 +1998,8 @@ ring_words_sys ring_words_sys_inst (
 	.f_paused         (ctl_pause),
 	.f_ctl_err        (ctl_err),
 	.f_atten          (ctl_atten),
+	.f_gl_trim        (ctl_gl_trim),
+	.f_gl_en          (ctl_gl_en),
 	.f_ovl_gen        (ovl_gen),           // (interface 0.9) words 46-47: the overlay plane
 	.f_ovl_state      (ovl_state),
 	.f_ovl_at         (ovl_at),

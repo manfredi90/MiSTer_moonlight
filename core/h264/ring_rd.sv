@@ -137,6 +137,8 @@ module ring_rd #(
     output logic         ctl_pause,        // PAUSE, during a session
     output logic         ctl_err,          // the last word read was refused
     output logic   [7:0] ctl_atten,
+    output logic         ctl_gl_en,        // (mm 1.5) GL_EN, during a session
+    output logic   [7:0] ctl_gl_trim,      // (mm 1.5) GL_TRIM (0 without GL_EN)
     // 0.13: the pads' rumble (program words 36-38) as passed to Main (clk_sys)
     output logic  [95:0] rumble,           // pad n at [16n +: 16], {large, small}; 0 outside a session
     output logic  [31:0] rum_changes,      // the value above changed (any pad), since the PLL lock (wrapping)
@@ -639,7 +641,7 @@ module ring_rd #(
                                            // 4-6 rumble, 7 geometry request (1.2)
     logic [31:0] p_set;
     logic [31:0] p_ctl;                    // 0.5: word 34 as read
-    logic [15:0] ctl_m;                    // ... as accepted ([0] PAUSE, [15:8] ATTEN)
+    logic [24:0] ctl_m;                    // ... as accepted ([0] PAUSE, [15:8] ATTEN, mm 1.5: [23:16] GL_TRIM, [24] GL_EN)
     logic [95:0] p_rum;                    // 0.13: words 36-38's low halves as read (pad n at [16n +: 16])
     logic [95:0] rum_m;                    // ... taken at the poll's end
     logic [63:0] p_geom;
@@ -666,6 +668,8 @@ module ring_rd #(
     wire  [31:0] d_rw   = p_wi - pub;       // 0.5: against the published (released) index
     wire  [31:0] d_ww   = p_wi - ww;
     wire         pause_m = sess_m && ctl_m[0];
+    wire         gl_en_m = sess_m && ctl_m[24];
+    wire  [7:0]  gl_trim_m = gl_en_m ? ctl_m[23:16] : 8'd0;
     wire  [95:0] rum_out_m = sess_m ? rum_m : 96'd0;    // 0.13: no session, no rumble
 
     // ---- 0.5: the audio fetch's request (clk_sys -> clk_mem: a toggle, the fields stable
@@ -687,9 +691,9 @@ module ring_rd #(
     cdc_snap #(.W(32)) u_rel (
         .src_clk(clk), .src_rst_n(lrst_n), .src_data(rel_s),
         .dst_clk(mclk), .dst_rst_n(mrst_n), .dst_data(rel_m), .dst_tick(rel_tick));
-    cdc_snap #(.W(10)) u_ctl (
-        .src_clk(mclk), .src_rst_n(mrst_n), .src_data({pause_m, ctl_err_m, ctl_m[15:8]}),
-        .dst_clk(clk), .dst_rst_n(lrst_n), .dst_data({ctl_pause, ctl_err, ctl_atten}), .dst_tick());
+    cdc_snap #(.W(19)) u_ctl (
+        .src_clk(mclk), .src_rst_n(mrst_n), .src_data({gl_en_m, gl_trim_m, pause_m, ctl_err_m, ctl_m[15:8]}),
+        .dst_clk(clk), .dst_rst_n(lrst_n), .dst_data({ctl_gl_en, ctl_gl_trim, ctl_pause, ctl_err, ctl_atten}), .dst_tick());
     // 0.13: the rumble into clk_sys, and its changes counted where they reach hps_io
     cdc_snap #(.W(96)) u_rum (
         .src_clk(mclk), .src_rst_n(mrst_n), .src_data(rum_out_m),
@@ -785,7 +789,7 @@ module ring_rd #(
                     es <= E_IDLE;
                     // 0.5: word 34, range-checked: a reserved bit refuses the word whole
                     if ((p_ctl & RI_CTL_RESERVED) != 32'd0) ctl_err_m <= 1'b1;
-                    else begin ctl_m <= p_ctl[15:0]; ctl_err_m <= 1'b0; end
+                    else begin ctl_m <= p_ctl[24:0]; ctl_err_m <= 1'b0; end
                     if (!booted) begin
                         seen_nonce <= p_nonce; booted <= 1'b1;           // an earlier load's: ignored
                     end else if (p_nonce != seen_nonce) begin

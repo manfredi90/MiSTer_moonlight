@@ -83,6 +83,8 @@
 module disp_ctl (
     input  wire         clk,               // clk_sys
     input  wire         rst_n,             // the per-mount reset (fe_rst_n)
+    input  wire         frame,             // (mm 1.5) every refresh's first dot (frame0's crossing, every field)
+    input  wire         gl_en,             // (mm 1.5) the genlock: re-anchor the grid at every refresh
     input  wire         frame0,            // (hd_raster) the raster's frame start -- the top field's first dot,
                                            // (h 0, v 0) -- crossed from clk_vid in the raster's mode (emu)
     input  wire         il,                // P6: the 480i raster (a refresh is a field)
@@ -185,6 +187,7 @@ module disp_ctl (
     wire [19:0] p_pick  = prog240_i ? 20'd427664 : 20'd429000;
     wire [19:0] p_skip  = prog240_i ? 20'd415642 : 20'd420420;
     wire        tick = aligned && (tdiv == 9'd0);
+    wire        gl_on = (gl_en === 1'b1);                   // (benches without the port: off)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             aligned <= 1'b0; tdiv <= '0; il_q <= 1'b0; p240_q <= 1'b0; std_q <= 2'd0; rp <= '0; fpar <= 1'b0;
@@ -195,8 +198,16 @@ module disp_ctl (
                 if (frame0) begin aligned <= 1'b1; tdiv <= 9'd1; rp <= 20'd1; fpar <= 1'b0; end
             end else begin
                 tdiv <= (tdiv == 9'd299) ? 9'd0 : tdiv + 9'd1;
-                rp <= (rp == rf_m1) ? 20'd0 : rp + 20'd1;
-                if (rp == rf_m1) fpar <= !fpar;
+                if (gl_on) begin
+                    // (mm 1.5) the genlock: the raster's refreshes are a line longer or shorter at the
+                    // program's will, so the grid restarts at each one's first dot (and waits there,
+                    // never wrapping on its own); the top field's start is frame0
+                    if (frame) begin rp <= 20'd1; fpar <= frame0 ? 1'b0 : !fpar; end
+                    else if (rp != rf_m1) rp <= rp + 20'd1;
+                end else begin
+                    rp <= (rp == rf_m1) ? 20'd0 : rp + 20'd1;
+                    if (rp == rf_m1) fpar <= !fpar;
+                end
             end
         end
     end

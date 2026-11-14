@@ -709,7 +709,7 @@ def scenario(name, ring_words=512, seed=1):
         for i in range(4, 12):
             p.write_au(_au(rng, rng.randrange(1, 200), i), pts=i, flow=False)
         p.op(OP_STILL, 20000)                                      # nothing consumed while paused
-        p.poke_ctrl(W34, 1 | (7 << 20))                             # a reserved bit: refused whole
+        p.poke_ctrl(W34, 1 | (7 << 25))                             # a reserved bit: refused whole (mm 1.5: 16-24 are the genlock's)
         p.wait_field("ctl_err", 1)
         p.op(OP_STILL, 8000)                                       # still paused (the old word kept)
         p.poke_ctrl(W34, 3 << L.const("CTL_ATTEN_LSB"))                # resume, -1.5 dB

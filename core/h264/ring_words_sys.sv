@@ -71,6 +71,8 @@ module ring_words_sys (
     input  wire  [0:0] f_paused,            // w45: (0.5) the pause is applied (word 34's PAUSE, during a session)
     input  wire  [0:0] f_ctl_err,           // w45: (0.5) the last word 34 read had a reserved bit set: refused, the previous values kept
     input  wire  [7:0] f_atten,             // w45: (0.5) the attenuation applied (word 34's ATTEN)
+    input  wire  [7:0] f_gl_trim,           // w45: (mm 1.5) the genlock trim applied (word 34's GL_TRIM; 0 without GL_EN)
+    input  wire  [0:0] f_gl_en,             // w45: (mm 1.5) the genlock is applied (word 34's GL_EN, during a session)
     input  wire  [31:0] f_ovl_gen,           // w46: (0.9) the overlay: the generation of the last consistent descriptor read
     input  wire  [1:0] f_ovl_state,         // w46: (0.9) 0 off, 1 accepted (shown while a session is open), 2 refused
     input  wire  [0:0] f_ovl_at,            // w46: (0.9) the overlay is anti-twittered (480i / 576i, Anti-Twitter Auto or On)
@@ -125,7 +127,7 @@ module ring_words_sys (
         w = 64'd0;
         case (ix)
             7'd0: begin w[63:0] = 64'h343632485453694D; end
-            7'd1: begin w[15:0] = 16'h104; w[31:16] = 16'h20; w[47:32] = 16'h20; w[63:48] = 16'h28; end
+            7'd1: begin w[15:0] = 16'h105; w[31:16] = 16'h20; w[47:32] = 16'h20; w[63:48] = 16'h28; end
             7'd2: begin w[31:0] = 32'h31800000; w[63:32] = 32'h800000; end
             7'd3: begin w[31:0] = f_seq_head; w[63:32] = 32'h400000; end
             7'd4: begin w[7:0] = f_state; w[15:8] = f_err; w[23:16] = f_live; w[31:24] = f_osd; w[63:32] = f_err_pos; end
@@ -144,7 +146,7 @@ module ring_words_sys (
             7'd42: begin w[31:0] = f_aud_gap; w[63:32] = f_aud_late; end
             7'd43: begin w[15:0] = f_aud_underruns; w[31:16] = f_aud_slip_drop; w[47:32] = f_aud_slip_rep; w[63:48] = f_aud_anchor; end
             7'd44: begin w[31:0] = f_aud_offset; w[63:32] = f_aud_hold_bytes; end
-            7'd45: begin w[0:0] = f_paused; w[1:1] = f_ctl_err; w[15:8] = f_atten; end
+            7'd45: begin w[0:0] = f_paused; w[1:1] = f_ctl_err; w[15:8] = f_atten; w[23:16] = f_gl_trim; w[24:24] = f_gl_en; end
             7'd46: begin w[31:0] = f_ovl_gen; w[33:32] = f_ovl_state; w[34:34] = f_ovl_at; w[35:35] = f_ovl_clip; w[39:36] = f_ovl_err; w[47:40] = f_ovl_torn; w[63:48] = f_ovl_late; end
             7'd47: begin w[11:0] = f_ar_x; w[23:12] = f_ar_y; w[63:32] = f_ovl_lines; end
             7'd80: begin w[11:0] = f_raster_w; w[23:12] = f_raster_h; w[25:24] = f_raster_mode; w[26:26] = f_raster_lb; w[28:27] = f_video_out; w[31:29] = f_colour; w[44:32] = f_pic_x0; w[60:48] = f_pic_y0; end
